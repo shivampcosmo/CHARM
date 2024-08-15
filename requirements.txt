@@ -1,0 +1,13 @@
+numpy
+scipy
+scikit-learn
+pandas
+astropy
+colossus
+dill
+tqdm
+Pylians
+torch
+sparse
+h5py
+pickle

@@ -6,8 +6,8 @@ astropy
 colossus
 dill
 tqdm
+Cython
 Pylians
 torch
 sparse
 h5py
-pickle

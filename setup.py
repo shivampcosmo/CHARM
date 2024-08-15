@@ -7,7 +7,7 @@ def parse_requirements(filename):
 
 
 setup(
-    name="CHARM",
+    name="charm",
     version="0.1",
     packages=find_packages(),
     install_requires=parse_requirements('requirements.txt'),  # Includes dependencies from requirements.txt

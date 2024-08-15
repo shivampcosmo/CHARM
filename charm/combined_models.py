@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from cnn_3d_stack import CNN3D_stackout
+from .cnn_3d_stack import CNN3D_stackout
 
 class FCNN(nn.Module):
     """
@@ -24,7 +24,7 @@ class FCNN(nn.Module):
 
 class COMBINED_Model(nn.Module):
     """
-    Combined model for the AR_NPE.
+    Combined model for the masses and number of halos.
     """
 
     def __init__(
@@ -385,7 +385,7 @@ class COMBINED_Model(nn.Module):
 
 class COMBINED_Model_vel_only(nn.Module):
     """
-    Combined model for the AR_NPE.
+    Combined model for the inferring velocities of halos.
     """
 
     def __init__(

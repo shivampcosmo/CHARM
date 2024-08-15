@@ -3,7 +3,7 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [metadata]
-name = "CHARM"
+name = "charm"
 version = "0.1.0"
 description = "python code for obtaining N-body like halo catalog from particle mesh simulations"
 author = "Shivam Pandey"

@@ -6,9 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
-from utils import unconstrained_RQS
+from .utils import unconstrained_RQS
 from torch.distributions import HalfNormal, Weibull, Gumbel
-# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def interpolate(x: torch.Tensor, xp: torch.Tensor, fp: torch.Tensor) -> torch.Tensor:

@@ -1,11 +1,10 @@
-slurm_logs/
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 
 slurm_logs/
+results/
 data/
 model_checkpoints/
 arxiv/

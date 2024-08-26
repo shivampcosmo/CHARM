@@ -30,7 +30,7 @@ master_node=$SLURMD_NODENAME
 
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
 export NCCL_BLOCKING_WAIT=0
-cd /mnt/home/spandey/ceph/CHARM/src/
+cd /mnt/home/spandey/ceph/CHARM/charm/
 srun python `which torchrun` \
         --nnodes $SLURM_JOB_NUM_NODES \
         --nproc_per_node $SLURM_GPUS_PER_NODE \

@@ -81,7 +81,7 @@ def get_data_split(dfhalo_ngp_xyzM_tokenized_padded_ended_squeezed, delta_box_al
 
     return x_train, y_train, dm_train, mask_train, x_val, y_val, dm_val, mask_val
 
-run_config_name = 'TRAIN_VEL_FREECOSMO_cond_fastpm_ns128.yaml'
+run_config_name = 'TRAIN_VEL_FREECOSMO_cond_fastpm_ns128_lresdata.yaml'
 with open(abs_path_config + '/' + run_config_name,"r") as file_object:
     config=yaml.load(file_object,Loader=yaml.SafeLoader)
 
@@ -174,7 +174,8 @@ if __name__ == "__main__":
 
     import pickle as pk
     # df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/HALO_MASS_VEL_varycosmo_subsel_random_nsims1800_nspji16_nfid512_train_data_QUIJOTE.pk', 'rb'))
-    df = pk.load(open(abs_path_data + '/' + 'HALO_MASS_test7328_QUIJOTE_test.pk', 'rb'))
+    # df = pk.load(open(abs_path_data + '/' + 'HALO_MASS_test14656_QUIJOTE_test.pk', 'rb'))
+    df = pk.load(open(abs_path_data + '/' + 'HALO_MASS_test11000_QUIJOTE_test.pk', 'rb'))    
 
     df_d_all_train = df['df_d_all_train']
     df_d_all_nsh_train = df['df_d_all_nsh_train']
@@ -188,7 +189,8 @@ if __name__ == "__main__":
 
     import pickle as pk
     # df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/DENSITY_varycosmo_subsel_random_nsims1800_nspji16_nfid512_train_data_FASTPM.pk', 'rb'))
-    df = pk.load(open(abs_path_data + '/' + 'DENSITY_test7328_FASTPM_test.pk', 'rb'))
+    # df = pk.load(open(abs_path_data + '/' + 'DENSITY_test14656_FASTPM_test.pk', 'rb'))
+    df = pk.load(open(abs_path_data + '/' + 'DENSITY_test11000_FASTPM_test.pk', 'rb'))
     df_d_all_train_FP = df['df_d_all_train']
     df_d_all_nsh_train_FP = df['df_d_all_nsh_train']
     df_Mh_all_train_FP = df['df_Mh_all_train']
@@ -196,6 +198,7 @@ if __name__ == "__main__":
     try:
         df_vh_train_FP = df['df_vh_train']
     except:
+        df_vh_train_FP = None
         pass
     ind_subsel_all_train_FP = df['ind_subsel_all_train']
     ind_subsel_fid_train_FP = df['ind_subsel_fid_train']
@@ -328,6 +331,13 @@ dropout = 0.2
 
 batch_size = 2048
 
+print('Initial GPU memory usage, before training starts:')
+for i in range(torch.cuda.device_count()):
+    print(f"GPU {i}:")
+    print(f"  Allocated: {torch.cuda.memory_allocated(i) / 1024 ** 2:.2f} MB")
+    print(f"  Reserved:  {torch.cuda.memory_reserved(i) / 1024 ** 2:.2f} MB")
+
+
 def run_func():
 
     device = 'cuda'
@@ -366,7 +376,14 @@ def run_func():
     
     print(f"I am rank {rank} and will process train data from {start} to {end}.")
     if rank == 0: print(f"Transferred train data to GPU", flush=True)        
-      
+
+    if (rank == 0):
+        print('Initial GPU memory usage, before training starts:')
+        for i in range(torch.cuda.device_count()):
+            print(f"GPU {i}:")
+            print(f"  Allocated: {torch.cuda.memory_allocated(i) / 1024 ** 2:.2f} MB")
+            print(f"  Reserved:  {torch.cuda.memory_reserved(i) / 1024 ** 2:.2f} MB")
+
     # num_cond_Ntot = num_cond
 
     if cond_Mass_for_vel:
@@ -415,6 +432,13 @@ def run_func():
 
     model = DDP(model, device_ids=[device_id], find_unused_parameters=True)
 
+    # checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_6600.pth', map_location=device_id)
+    # checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_6600.pth', map_location=f'cuda:{device_id}')        
+    checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_4800_moredata.pth', map_location=f'cuda:{device_id}')            
+    model.load_state_dict(checkpoint['state_dict'])
+
+
+
     decay_lr = True # whether to decay the learning rate
     decay_lr_model = 'cosine'
     min_lr = 1e-4 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
@@ -457,9 +481,6 @@ def run_func():
         elif model == 'constant':
             return learning_rate
 
-
-
-
     # t0 = time.time()
     for iter_num in (range(nepochs)):
         lr = get_lr(iter_num, model=decay_lr_model) if decay_lr else learning_rate
@@ -477,6 +498,13 @@ def run_func():
             mask_tensor_vel_train_jb         
             )            
 
+        if (rank == 0) and (iter_num == 0):
+            print('GPU memory usage after calling model forward once:')
+            for i in range(torch.cuda.device_count()):
+                print(f"GPU {i}:")
+                print(f"  Allocated: {torch.cuda.memory_allocated(i) / 1024 ** 2:.2f} MB")
+                print(f"  Reserved:  {torch.cuda.memory_reserved(i) / 1024 ** 2:.2f} MB")
+
         scaler.scale(loss).backward()   
         if (iter_num % 10) == 0 and (rank == 0):
             print(f"iter {iter_num}, loss: {loss.item()}")                 
@@ -490,7 +518,7 @@ def run_func():
                 state = {'loss_min': loss_min, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                             'loss':loss}
 
-                save_bestfit_model_name = sdir_model_checkpoint + 'test_model_bestfit_' + str(iter_num) + '.pth'
+                save_bestfit_model_name = sdir_model_checkpoint + 'test_model_bestfit_' + str(iter_num) + '_evenmoredata_nsub11k.pth'
                 torch.save(
                     state, save_bestfit_model_name
                     )
@@ -499,6 +527,14 @@ def run_func():
         scaler.update()
         # flush the gradients as soon as we can, no need for this memory anymore
         optimizer.zero_grad(set_to_none=True)
+
+        if (rank == 0) and (iter_num == 0):
+            print('GPU memory usage after passing gradients backward once:')
+            for i in range(torch.cuda.device_count()):
+                print(f"GPU {i}:")
+                print(f"  Allocated: {torch.cuda.memory_allocated(i) / 1024 ** 2:.2f} MB")
+                print(f"  Reserved:  {torch.cuda.memory_reserved(i) / 1024 ** 2:.2f} MB")
+
 
 
     dist.destroy_process_group()

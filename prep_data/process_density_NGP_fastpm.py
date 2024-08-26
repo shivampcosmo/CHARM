@@ -22,7 +22,8 @@ def save_cic_densities(ji):
         n_filter = 3
         n_cnn_all = [0,4]
         # snap_num_array = [4, 3, -1]
-        snap_num_array = [3]
+        # snap_num_array = [3]
+        snap_num_array = [-1]
         BoxSize = 1000.0    
         for grid in grids:
             # print('doing res: ' + str(grid))

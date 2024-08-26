@@ -5,9 +5,9 @@ from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 import sparse
 
-def get_subvol_selection(df_Mh_all, df_Nh_all, df_v_all, nsubsel=None, ind_subsel=None, subsel_criteria='all'):
+def get_subvol_selection(df_Mh_all, df_Nh_all, df_v_all, nsubsel=None, ind_subsel=None, subsel_criteria='all', dtype=np.float16):
     # convert from sparse to dense:
-    df_Mh_all, df_Nh_all, df_v_all = df_Mh_all.todense(), df_Nh_all.todense(), df_v_all.todense()
+    df_Mh_all, df_Nh_all, df_v_all = df_Mh_all.todense().astype(dtype), df_Nh_all.todense().astype(dtype), df_v_all.todense().astype(dtype)
     if subsel_criteria == 'all':
         df_Mh_sel = df_Mh_all
         df_Nh_sel = df_Nh_all
@@ -43,12 +43,12 @@ def get_subvol_selection(df_Mh_all, df_Nh_all, df_v_all, nsubsel=None, ind_subse
 
 
 
-def get_density_vals(sdir_cosmo, jsim, indsel_subvol, nvox_per_dim, nside_d, nbatch, nfilter, ncnn, z_all, stype, nsubvol_per_ji, is_HR, Mmin):
+def get_density_vals(sdir_cosmo, jsim, indsel_subvol, nvox_per_dim, nside_d, nbatch, nfilter, ncnn, z_all, stype, nsubvol_per_ji, is_HR, Mmin, dtype=np.float16):
     # jsim = ji_array[ji]
     if any('v' in str(string) for string in z_all):
-        return_mat = np.zeros((len(indsel_subvol), len(z_all)+2, nvox_per_dim, nvox_per_dim, nvox_per_dim))
+        return_mat = np.zeros((len(indsel_subvol), len(z_all)+2, nvox_per_dim, nvox_per_dim, nvox_per_dim), dtype=dtype)
     else:
-        return_mat = np.zeros((len(indsel_subvol), len(z_all), nvox_per_dim, nvox_per_dim, nvox_per_dim))
+        return_mat = np.zeros((len(indsel_subvol), len(z_all), nvox_per_dim, nvox_per_dim, nvox_per_dim), dtype=dtype)
     for iz, z in enumerate(z_all):
         # print(jsim, z)
         # if z is a type of float, then it is a redshift:
@@ -75,11 +75,11 @@ def get_density_vals(sdir_cosmo, jsim, indsel_subvol, nvox_per_dim, nside_d, nba
 
 
             if stype == 'cic':
-                return_mat[:, iz, ...] = np.log(1 + df_load['density_cic_pad'] + 1e-10)[indsel_subvol,...]
+                return_mat[:, iz, ...] = (np.log(1 + df_load['density_cic_pad'] + 1e-10)[indsel_subvol,...]).astype(dtype)
             if stype == 'uniform_cic':
-                return_mat[:, iz, ...] = np.log(1 + df_load['density_uniform_cic_pad'] + 1e-10)[indsel_subvol,...]
+                return_mat[:, iz, ...] = (np.log(1 + df_load['density_uniform_cic_pad'] + 1e-10)[indsel_subvol,...]).astype(dtype)
             if stype == 'ngp':
-                return_mat[:, iz, ...] = np.log(1 + df_load['density_ngp_pad'] + 1e-10)[indsel_subvol,...]
+                return_mat[:, iz, ...] = (np.log(1 + df_load['density_ngp_pad'] + 1e-10)[indsel_subvol,...]).astype(dtype)
         # if z is a string, then its type is 'z_REDSHIFT_diff_sig_VALUE', where VALUE is a float. extract that REDSHIFT and VALUE
         elif isinstance(z, str):
             if z[0] == 'z':
@@ -110,11 +110,11 @@ def get_density_vals(sdir_cosmo, jsim, indsel_subvol, nvox_per_dim, nside_d, nba
                             )
 
                 if stype == 'cic':
-                    density_unsmoothed = df_load['density_cic_pad'][indsel_subvol,...]
+                    density_unsmoothed = (df_load['density_cic_pad'][indsel_subvol,...]).astype(dtype)
                 if stype == 'uniform_cic':
-                    density_unsmoothed = df_load['density_uniform_cic_pad'][indsel_subvol,...]
+                    density_unsmoothed = (df_load['density_uniform_cic_pad'][indsel_subvol,...]).astype(dtype)
                 if stype == 'ngp':
-                    density_unsmoothed = df_load['density_ngp_pad'][indsel_subvol,...]
+                    density_unsmoothed = (df_load['density_ngp_pad'][indsel_subvol,...]).astype(dtype)
                 # now smooth it with a gaussian filter of width VALUE
                 density_smoothed = gaussian_filter(density_unsmoothed, sigma=VALUE, axes=[1,2,3])
                 # save the difference between smoothed and unsmoothed density
@@ -128,7 +128,7 @@ def get_density_vals(sdir_cosmo, jsim, indsel_subvol, nvox_per_dim, nside_d, nba
                 M_id = z[1]
                 Mcond_iz = df_h['M' + str(M_id) + '_halos_pad'][indsel_subvol,...]
                 Mcond_iz = (Mcond_iz - Mmin)/Mmin
-                return_mat[:, iz, ...] = Mcond_iz
+                return_mat[:, iz, ...] = Mcond_iz.astype(dtype)
 
             elif z[0] == 'v':
                 z_REDSHIFT = float(z.split('_')[1])
@@ -138,7 +138,7 @@ def get_density_vals(sdir_cosmo, jsim, indsel_subvol, nvox_per_dim, nside_d, nba
                 df_load = pk.load(open(
                     sdir_cosmo + '/' + str(jsim) + '/velocity_HR_subvol_m_res_' + str(nside_d) + '_z=' + str(z_REDSHIFT) + '_nbatch_' + str(nbatch) + '_nfilter_' + str(nfilter) + '_ncnn_' + str(ncnn) + '.pk', 'rb')
                     )
-                return_mat[:, iz:iz+3, ...] = df_load['velocity_cic_pad'][indsel_subvol,...]
+                return_mat[:, iz:iz+3, ...] = (df_load['velocity_cic_pad'][indsel_subvol,...]).astype(dtype)
 
     return return_mat
 
@@ -169,7 +169,9 @@ def load_density_halo_data_NGP(
         is_HR = False,
         vel_type='true',
         get_density=False,
-        get_halos=False
+        get_halos=False,
+        dtype_massNv=np.float16,
+        dtype_density=np.float16
     ):
 
     df_d_all, df_d_all_nsh, df_Mh_all, df_Nh_all, df_v_all, cosmo_val_all = None, None, None, None, None, None
@@ -201,20 +203,20 @@ def load_density_halo_data_NGP(
                 df_h = pk.load(open(fname, 'rb'))
                 if ji == 0:
                     if indsubsel_all_inp is None:
-                        df_Mh_all, df_Nh_all, df_v_all, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], nsubsel=nsubvol_per_ji, subsel_criteria=subsel_criteria)
+                        df_Mh_all, df_Nh_all, df_v_all, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], nsubsel=nsubvol_per_ji, subsel_criteria=subsel_criteria, dtype=dtype_massNv)
                     else:
-                        df_Mh_all, df_Nh_all, df_v_all, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], ind_subsel=indsubsel_all_inp[jsim], subsel_criteria='ind')
-                    cosmo_val_all = np.tile(LH_cosmo_val_all[jsim], (*df_Nh_all.shape ,1))
+                        df_Mh_all, df_Nh_all, df_v_all, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], ind_subsel=indsubsel_all_inp[jsim], subsel_criteria='ind', dtype=dtype_massNv)
+                    cosmo_val_all = np.tile(LH_cosmo_val_all[jsim], (*df_Nh_all.shape ,1)).astype(dtype_massNv)
                 else:
                     if indsubsel_all_inp is None:
-                        df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], nsubsel=nsubvol_per_ji, subsel_criteria=subsel_criteria)
+                        df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], nsubsel=nsubvol_per_ji, subsel_criteria=subsel_criteria, dtype=dtype_massNv)
                     else:
-                        df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], ind_subsel=indsubsel_all_inp[jsim], subsel_criteria='ind')
+                        df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], ind_subsel=indsubsel_all_inp[jsim], subsel_criteria='ind', dtype=dtype_massNv)
 
                     df_Mh_all = np.concatenate((df_Mh_all, df_Mh_all_ji), axis=0)
                     df_Nh_all = np.concatenate((df_Nh_all, df_Nh_all_ji), axis=0)
                     df_v_all = np.concatenate((df_v_all, dh_v_all_ji), axis=0)
-                    cosmo_val_ji = np.tile(LH_cosmo_val_all[jsim], (*df_Nh_all_ji.shape ,1))
+                    cosmo_val_ji = np.tile(LH_cosmo_val_all[jsim], (*df_Nh_all_ji.shape ,1)).astype(dtype_massNv)
                     cosmo_val_all = np.concatenate((cosmo_val_all, cosmo_val_ji), axis=0)
                 # if indsubsel_all_inp is None:
                 indsubsel_all[jsim] = ind_subsel_ji
@@ -233,20 +235,20 @@ def load_density_halo_data_NGP(
 
             df_h = pk.load(open(fname, 'rb'))
             if indsubsel_fid_inp is None:
-                df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], nsubsel=nsubvol_fid, subsel_criteria=subsel_criteria)
+                df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], nsubsel=nsubvol_fid, subsel_criteria=subsel_criteria, dtype=dtype_massNv)
             else:
-                df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], ind_subsel=indsubsel_fid_inp, subsel_criteria='ind')
+                df_Mh_all_ji, df_Nh_all_ji, dh_v_all_ji, ind_subsel_ji = get_subvol_selection(df_h['M_halos'], df_h['N_halos'], df_h[f'v_halos_{vel_type}'], ind_subsel=indsubsel_fid_inp, subsel_criteria='ind', dtype=dtype_massNv)
             if len(ji_array) > 0:
                 df_Mh_all = np.concatenate((df_Mh_all, df_Mh_all_ji), axis=0)
                 df_Nh_all = np.concatenate((df_Nh_all, df_Nh_all_ji), axis=0)
                 df_v_all = np.concatenate((df_v_all, dh_v_all_ji), axis=0)
-                cosmo_val_ji = np.tile(fid_cosmo_val_all, (*df_Nh_all.shape ,1))[ind_subsel_ji,...]
+                cosmo_val_ji = (np.tile(fid_cosmo_val_all, (*df_Nh_all.shape ,1))[ind_subsel_ji,...]).astype(dtype_massNv)
                 cosmo_val_all = np.concatenate((cosmo_val_all, cosmo_val_ji), axis=0)
             else:
                 df_Mh_all = df_Mh_all_ji
                 df_Nh_all = df_Nh_all_ji
                 df_v_all = dh_v_all_ji
-                cosmo_val_ji = np.tile(fid_cosmo_val_all, (*df_Nh_all.shape ,1))[ind_subsel_ji,...]
+                cosmo_val_ji = (np.tile(fid_cosmo_val_all, (*df_Nh_all.shape ,1))[ind_subsel_ji,...]).astype(dtype_massNv)
                 cosmo_val_all = cosmo_val_ji
 
             ind_subsel_fid = ind_subsel_ji
@@ -267,17 +269,17 @@ def load_density_halo_data_NGP(
             df_d0 = df_load['density_ngp_pad']
         ji0_shape = nsubvol_per_ji
         if any('v' in str(string) for string in z_all):
-            df_d_all = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all)+2, df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]))
+            df_d_all = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all)+2, df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]), dtype=dtype_density)
         else:
-            df_d_all = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all), df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]))
+            df_d_all = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all), df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]), dtype=dtype_density)
 
         for ji in tqdm(range(len(ji_array))):
             jsim = ji_array[ji]
-            df_d_all[ji*ji0_shape:(ji+1)*ji0_shape, ...] = get_density_vals(sdir_cosmo, jsim, indsubsel_all[jsim], df_d0.shape[1], nside_d, nbatch, nfilter, ncnn, z_all, stype, nsubvol_per_ji, is_HR, Mmin)
+            df_d_all[ji*ji0_shape:(ji+1)*ji0_shape, ...] = get_density_vals(sdir_cosmo, jsim, indsubsel_all[jsim], df_d0.shape[1], nside_d, nbatch, nfilter, ncnn, z_all, stype, nsubvol_per_ji, is_HR, Mmin, dtype=dtype_density)
 
         if nsubvol_fid > 0:
             jsim = ji_array_fid[0]
-            df_d_all[len(ji_array)*ji0_shape:,...] = get_density_vals(sdir_fid, jsim, ind_subsel_fid, df_d0.shape[1], nside_d, nbatch, nfilter, ncnn, z_all, stype, nsubvol_fid, is_HR, Mmin)
+            df_d_all[len(ji_array)*ji0_shape:,...] = get_density_vals(sdir_fid, jsim, ind_subsel_fid, df_d0.shape[1], nside_d, nbatch, nfilter, ncnn, z_all, stype, nsubvol_fid, is_HR, Mmin, dtype=dtype_density)
 
         # if is_HR and 'fastpm' not in sdir_cosmo:
         df_load = pk.load(open(
@@ -292,16 +294,16 @@ def load_density_halo_data_NGP(
             df_d0 = df_load['density_ngp_pad']    
         ji0_shape = nsubvol_per_ji
         if any('v' in str(string) for string in z_all):
-            df_d_all_nsh = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all)+2, df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]))
+            df_d_all_nsh = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all)+2, df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]), dtype=dtype_density)
         else:
-            df_d_all_nsh = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all), df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]))
+            df_d_all_nsh = np.zeros((len(ji_array)*ji0_shape + nsubvol_fid, len(z_all), df_d0.shape[1], df_d0.shape[2], df_d0.shape[3]), dtype=dtype_density)
         for ji in range(len(ji_array)):
             jsim = ji_array[ji]
-            df_d_all_nsh[ji*ji0_shape:(ji+1)*ji0_shape, ...] = get_density_vals(sdir_cosmo, jsim, indsubsel_all[jsim], df_d0.shape[1], nside_h, nbatch, nfilter, 0, z_all, stype, nsubvol_per_ji, is_HR, Mmin)
+            df_d_all_nsh[ji*ji0_shape:(ji+1)*ji0_shape, ...] = get_density_vals(sdir_cosmo, jsim, indsubsel_all[jsim], df_d0.shape[1], nside_h, nbatch, nfilter, 0, z_all, stype, nsubvol_per_ji, is_HR, Mmin, dtype=dtype_density)
 
         if nsubvol_fid > 0:
             jsim = ji_array_fid[0]
-            df_d_all_nsh[len(ji_array)*ji0_shape:,...] = get_density_vals(sdir_fid, jsim, ind_subsel_fid, df_d0.shape[1], nside_d, nbatch, nfilter, 0, z_all, stype, nsubvol_fid, is_HR, Mmin)
+            df_d_all_nsh[len(ji_array)*ji0_shape:,...] = get_density_vals(sdir_fid, jsim, ind_subsel_fid, df_d0.shape[1], nside_d, nbatch, nfilter, 0, z_all, stype, nsubvol_fid, is_HR, Mmin, dtype=dtype_density)
 
     return df_d_all, df_d_all_nsh, df_Mh_all, df_Nh_all, df_v_all, indsubsel_all, ind_subsel_fid, cosmo_val_all
 
@@ -444,7 +446,8 @@ def prep_density_halo_cats_batched(
         vmin=-1000, 
         vmax=1000,
         get_density=False,
-        get_halos=False
+        get_halos=False,
+        dtype_density=np.float16
     ):
     df_d_all_out = []
     df_d_all_nsh_out = []
@@ -576,8 +579,8 @@ def prep_density_halo_cats_batched(
 
     # final dict with all the required data to run the model
     return_dict = {}
-    return_dict['df_d_all'] = np.array(df_d_all_out)
-    return_dict['df_d_all_nsh'] = np.array(df_d_all_nsh_out)
+    return_dict['df_d_all'] = np.array(df_d_all_out, dtype=dtype_density)
+    return_dict['df_d_all_nsh'] = np.array(df_d_all_nsh_out, dtype=dtype_density)
     return_dict['cosmo_val_all'] = np.array(cosmo_val_all_out)
     return_dict['M_halos_all_sort_norm'] = np.array(M_halos_all_sort_norm_all)
     return_dict['v_halos_all_sort_norm'] = np.array(v_halos_all_sort_norm_all)

@@ -23,8 +23,8 @@ source ~/miniconda3/bin/activate nbodykit
 
 # conda activate nbodykit
 
-cd /mnt/home/spandey/ceph/AR_NPE/nf/
-time srun python /mnt/home/spandey/ceph/AR_NPE/nf/process_density_NGP_fastpm.py
+cd /mnt/home/spandey/ceph/CHARM/prep_data/
+time srun python /mnt/home/spandey/ceph/CHARM/prep_data/process_density_NGP_fastpm.py
 echo "done"
 
 

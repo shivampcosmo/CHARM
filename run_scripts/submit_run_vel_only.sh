@@ -3,9 +3,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=12
 #SBATCH --time=8:00:00
-#SBATCH --job-name=test2_vel
-#SBATCH -p gpu
-#SBATCH -C h100
+#SBATCH --job-name=test4_vel
+#SBATCH -p gpuxl
 #SBATCH --mem=1000G
 #SBATCH --gpus-per-node=4
 #SBATCH --output=/mnt/home/spandey/ceph/CHARM/run_scripts/slurm_logs/%x.%j.out
@@ -28,7 +27,7 @@ source ~/miniconda3/bin/activate ili-sbi
 
 master_node=$SLURMD_NODENAME
 
-cd /mnt/home/spandey/ceph/CHARM/src/
+cd /mnt/home/spandey/ceph/CHARM/charm/
 srun python `which torchrun` \
         --nnodes $SLURM_JOB_NUM_NODES \
         --nproc_per_node $SLURM_GPUS_PER_NODE \

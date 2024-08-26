@@ -1,7 +1,7 @@
 sim_settings:
   # number of simulations to train
   nsims : 1800
-  nsubvol_per_ji : 16
+  nsubvol_per_ji : 32
   nsubvol_fid : 512
   num_cosmo_params : 5
   subsel_criteria : 'random'
@@ -21,14 +21,14 @@ sim_settings:
   # z_all_FP : [0, 99, 'z_0_diff_sig_1', 'z_0_diff_sig_3']  
   # z_all_FP : [0, 'z_0_diff_sig_1', 'z_0_diff_sig_3']    
   # z_all_FP : [0.5, 'z_0.5_diff_sig_1', 'v_0.5']      
-  z_all_FP : [0.5, 'v_0.5']      
+  z_all_FP : [0.5, 99, 'v_0.5']      
   # condition on which simulation:
   cond_sim : 'fastpm'
   # cond_sim : 'quijote'  
   # resolution of the halo catalog:
   ns_h : 128
   # nsims per batch when training
-  nsims_per_batch : 458
+  nsims_per_batch : 908
   # nbatches to use to train
   nbatches_train : 64
 
@@ -84,4 +84,4 @@ train_settings:
   L2norm_Ntothist : False
   L2norm_M1hist : False
   nflows_train : 20
-  save_string : '_COND_FPM_Mmin5e12_subvolji16_nsubvolfid512'
+  save_string : '_COND_FPM_Mmin5e12_subvolji32_nsubvolfid512'

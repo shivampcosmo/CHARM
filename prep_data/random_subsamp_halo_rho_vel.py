@@ -9,7 +9,7 @@ os.chdir(root_dir)
 import sys, os
 # append the root_dir to the path
 sys.path.append(root_dir)
-from nf.utils_data_prep_cosmo_vel import *
+from charm.utils_data_prep_cosmo_vel import *
 from colossus.cosmology import cosmology
 params = {'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.049, 'sigma8': 0.834, 'ns': 0.9624}
 cosmo = cosmology.setCosmology('myCosmo', **params)
@@ -111,30 +111,38 @@ num_cond = nout_cnn + ninp + num_cosmo_params
 import pickle as pk
 import numpy as np
 
-df_d_all_train, df_d_all_nsh_train, df_Mh_all_train, df_Nh_train, df_vh_train, ind_subsel_all_train, ind_subsel_fid_train, cosmo_val_all_train = load_density_halo_data_NGP(
-    ji_array, ns_d, nb, nf, nc, z_all, ns_h,z_inference=z_inference,nsubvol_per_ji=nsubvol_per_ji,nsubvol_fid=nsubvol_fid,
-    sdir_cosmo='/mnt/home/spandey/ceph/Quijote/data_NGP_self_LH',
-    sdir_fid='/mnt/home/spandey/ceph/Quijote/data_NGP_self',  
-    LH_cosmo_val_file='/mnt/home/spandey/ceph/Quijote/latin_hypercube_params.txt',  
-    stype=stype, mass_type=mass_type, lgMmincutstr = lgMmincutstr, subsel_criteria=subsel_criteria, is_HR = is_HR,  vel_type='diff',
-    get_density=False,
-    get_halos=True
-    )
+# df_d_all_train, df_d_all_nsh_train, df_Mh_all_train, df_Nh_train, df_vh_train, ind_subsel_all_train, ind_subsel_fid_train, cosmo_val_all_train = load_density_halo_data_NGP(
+#     ji_array, ns_d, nb, nf, nc, z_all, ns_h,z_inference=z_inference,nsubvol_per_ji=nsubvol_per_ji,nsubvol_fid=nsubvol_fid,
+#     sdir_cosmo='/mnt/home/spandey/ceph/Quijote/data_NGP_self_LH',
+#     sdir_fid='/mnt/home/spandey/ceph/Quijote/data_NGP_self',  
+#     LH_cosmo_val_file='/mnt/home/spandey/ceph/Quijote/latin_hypercube_params.txt',  
+#     stype=stype, mass_type=mass_type, lgMmincutstr = lgMmincutstr, subsel_criteria=subsel_criteria, is_HR = is_HR,  vel_type='diff',
+#     get_density=False,
+#     get_halos=True
+#     )
 
-import sparse
-saved = {'df_d_all_train':df_d_all_train,
-            'df_d_all_nsh_train':df_d_all_nsh_train,
-            'df_Mh_all_train':sparse.COO(df_Mh_all_train),
-            'df_Nh_train':sparse.COO(df_Nh_train),
-            'df_vh_train':sparse.COO(df_vh_train),
-            'ind_subsel_all_train':ind_subsel_all_train,
-            'ind_subsel_fid_train':ind_subsel_fid_train,
-            'cosmo_val_all_train':cosmo_val_all_train
-            }
+# import sparse
+# saved = {'df_d_all_train':df_d_all_train,
+#             'df_d_all_nsh_train':df_d_all_nsh_train,
+#             'df_Mh_all_train':sparse.COO(df_Mh_all_train),
+#             'df_Nh_train':sparse.COO(df_Nh_train),
+#             'df_vh_train':sparse.COO(df_vh_train),
+#             'ind_subsel_all_train':ind_subsel_all_train,
+#             'ind_subsel_fid_train':ind_subsel_fid_train,
+#             'cosmo_val_all_train':cosmo_val_all_train
+#             }
+
+# import pickle as pk
+# nsims = int(config_sims['nsims'])
+# pk.dump(saved, open('/mnt/home/spandey/ceph/CHARM/data/' + f'HALO_MASS_VEL_varycosmo_subsel_random_nsims{nsims}_nspji{nsubvol_per_ji}_nfid{nsubvol_fid}' + '_train_data_QUIJOTE.pk', 'wb'))
 
 import pickle as pk
 nsims = int(config_sims['nsims'])
-pk.dump(saved, open('/mnt/home/spandey/ceph/CHARM/data/' + f'HALO_MASS_VEL_varycosmo_subsel_random_nsims{nsims}_nspji16_nfid512' + '_train_data_QUIJOTE.pk', 'wb'))
+df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/' + f'HALO_MASS_VEL_varycosmo_subsel_random_nsims{nsims}_nspji{nsubvol_per_ji}_nfid{nsubvol_fid}' + '_train_data_QUIJOTE.pk', 'rb'))
+cosmo_val_all_train = df['cosmo_val_all_train']
+ind_subsel_all_train = df['ind_subsel_all_train']
+ind_subsel_fid_train = df['ind_subsel_fid_train']
+
 
 df_d_all_train_FP, df_d_all_nsh_train_FP, df_Mh_all_train_FP, df_Nh_train_FP, df_vh_train_FP, ind_subsel_all_train_FP, ind_subsel_fid_train_FP, cosmo_val_all_train_FP = load_density_halo_data_NGP(
     ji_array, ns_d, nb, nf, nc, z_all_FP, ns_h,z_inference=z_inference,nsubvol_per_ji=nsubvol_per_ji,nsubvol_fid=nsubvol_fid,
@@ -165,7 +173,7 @@ saved = {'df_d_all_train':df_d_all_train_FP,
 
 import pickle as pk
 nsims = int(config_sims['nsims'])
-pk.dump(saved, open('/mnt/home/spandey/ceph/CHARM/data/' + f'DENSITY_varycosmo_subsel_random_nsims{nsims}_nspji16_nfid512' + '_train_data_FASTPM.pk', 'wb'))
+pk.dump(saved, open('/mnt/home/spandey/ceph/CHARM/data/' + f'DENSITY_varycosmo_subsel_random_nsims{nsims}_nspji{nsubvol_per_ji}_nfid{nsubvol_fid}' + '_train_data_FASTPM.pk', 'wb'))
 
 
 

@@ -172,7 +172,8 @@ num_cond = nout_cnn + ninp + num_cosmo_params
 if __name__ == "__main__":
 
     import pickle as pk
-    df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/HALO_MASS_VEL_varycosmo_subsel_random_nsims1800_nspji16_nfid512_train_data_QUIJOTE.pk', 'rb'))
+    # df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/HALO_MASS_VEL_varycosmo_subsel_random_nsims1800_nspji16_nfid512_train_data_QUIJOTE.pk', 'rb'))
+    df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/HALO_MASS_VEL_varycosmo_subsel_random_nsims1800_nspji32_nfid512_train_data_QUIJOTE.pk', 'rb'))    
     # df = pk.load(open(abs_path_data + '/' + 'HALO_MASS_test1000_QUIJOTE_test.pk', 'rb'))
 
     df_d_all_train = df['df_d_all_train']
@@ -185,7 +186,8 @@ if __name__ == "__main__":
 
 
     import pickle as pk
-    df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/DENSITY_varycosmo_subsel_random_nsims1800_nspji16_nfid512_train_data_FASTPM.pk', 'rb'))
+    # df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/DENSITY_varycosmo_subsel_random_nsims1800_nspji16_nfid512_train_data_FASTPM.pk', 'rb'))
+    df = pk.load(open('/mnt/home/spandey/ceph/CHARM/data/DENSITY_varycosmo_subsel_random_nsims1800_nspji32_nfid512_train_data_FASTPM.pk', 'rb'))    
     # df = pk.load(open(abs_path_data + '/' + 'DENSITY_test1000_FASTPM_test.pk', 'rb'))
     df_d_all_train_FP = df['df_d_all_train']
     df_d_all_nsh_train_FP = df['df_d_all_nsh_train']
@@ -314,7 +316,7 @@ from dataclasses import dataclass
 max_iters = 8000
 eval_interval = 10
 learning_rate = 5e-4
-sdir_model_checkpoint = abs_path_checkpoint + '/test0/'
+sdir_model_checkpoint = abs_path_checkpoint + '/test0_nj32/'
 # make directory if does not exist:
 try:
     if not os.path.exists(sdir_model_checkpoint):
@@ -566,11 +568,11 @@ def run_func():
     iter_num = 0
     loss_min = 1e20
 
-    # num_iter_load = 0
-    num_iter_load = 5964
-    # # checkpoint = torch.load(sdir_model_checkpoint + f'test1_model_bestfit_1599.pth', map_location=device_id)
-    checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_{num_iter_load}.pth', map_location=f'cuda:{device_id}')        
-    model.load_state_dict(checkpoint['state_dict'])
+    num_iter_load = 0
+    # num_iter_load = 5964
+    # # # checkpoint = torch.load(sdir_model_checkpoint + f'test1_model_bestfit_1599.pth', map_location=device_id)
+    # checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_{num_iter_load}.pth', map_location=f'cuda:{device_id}')        
+    # model.load_state_dict(checkpoint['state_dict'])
 
 
     # train_binary_all = [1,1,1]
@@ -621,6 +623,12 @@ def run_func():
         elif model == 'constant':
             return learning_rate
 
+    if (rank == 0):
+        print('Initial GPU memory usage, before training starts:')
+        for i in range(torch.cuda.device_count()):
+            print(f"GPU {i}:")
+            print(f"  Allocated: {torch.cuda.memory_allocated(i) / 1024 ** 2:.2f} MB")
+            print(f"  Reserved:  {torch.cuda.memory_reserved(i) / 1024 ** 2:.2f} MB")
 
 
 
@@ -640,7 +648,6 @@ def run_func():
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
 
-
             loss = model(
                 X_Mdiff_jb,
                 X_M1_jb,
@@ -657,6 +664,13 @@ def run_func():
                 train_M1=train_M1,
                 train_Mdiff=train_Mdiff,            
                 )            
+
+            if (rank == 0) and (iter_num == 0):
+                print('GPU memory usage after calling model forward once:')
+                for i in range(torch.cuda.device_count()):
+                    print(f"GPU {i}:")
+                    print(f"  Allocated: {torch.cuda.memory_allocated(i) / 1024 ** 2:.2f} MB")
+                    print(f"  Reserved:  {torch.cuda.memory_reserved(i) / 1024 ** 2:.2f} MB")
 
             scaler.scale(loss).backward()   
             if (iter_num % 10) == 0 and (rank == 0):
@@ -682,6 +696,14 @@ def run_func():
             scaler.update()
             # flush the gradients as soon as we can, no need for this memory anymore
             optimizer.zero_grad(set_to_none=True)
+
+            if (rank == 0) and (iter_num == 0):
+                print('GPU memory usage after passing gradients backward once:')
+                for i in range(torch.cuda.device_count()):
+                    print(f"GPU {i}:")
+                    print(f"  Allocated: {torch.cuda.memory_allocated(i) / 1024 ** 2:.2f} MB")
+                    print(f"  Reserved:  {torch.cuda.memory_reserved(i) / 1024 ** 2:.2f} MB")
+
 
 
     dist.destroy_process_group()

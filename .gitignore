@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+sbi-logs/
 slurm_logs/
 results/
 data/

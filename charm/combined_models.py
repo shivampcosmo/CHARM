@@ -5,7 +5,10 @@ import sys, os
 import pathlib
 curr_path = pathlib.Path().absolute()
 sys.path.append(str(curr_path))
-from cnn_3d_stack import CNN3D_stackout
+try:
+    from .cnn_3d_stack import CNN3D_stackout
+except:
+    from cnn_3d_stack import CNN3D_stackout
 
 class FCNN(nn.Module):
     """

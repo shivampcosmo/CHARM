@@ -6,6 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
+import sys, os
+import pathlib
+curr_path = pathlib.Path().absolute()
+sys.path.append(str(curr_path))
 from utils import unconstrained_RQS
 from torch.distributions import HalfNormal, Weibull, Gumbel
 

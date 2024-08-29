@@ -1,6 +1,11 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import sys, os
+import pathlib
+curr_path = pathlib.Path().absolute()
+sys.path.append(str(curr_path))
+
 from cnn_3d_stack import CNN3D_stackout
 
 class FCNN(nn.Module):

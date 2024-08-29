@@ -13,7 +13,7 @@ setup(
     install_requires=parse_requirements('requirements.txt'),  # Includes dependencies from requirements.txt
     author="Shivam Pandey",
     author_email="shivampcosmo@gmail.com",
-    description="python code for obtaining N-body like halo catalog from particle mesh simulations",
+    description="python code for obtaining N-body like halo catalog from fast particle mesh simulations",
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url="https://github.com/shivampcosmo/CHARM.git",  # Replace with your project's URL

@@ -35,14 +35,14 @@ def calc_summary(isim, cat_type='constant_nbar',nbar=4e-4, lgMmin=13.0):
         LH_cosmo_val_file = '/mnt/home/spandey/ceph/Quijote/latin_hypercube_params.txt'
 
         if cat_type == 'constant_nbar':
-            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth_nsubv_vel_10k/'
+            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/test_mp/'
             if nbar == 4e-4:
                 suffix = '4en4'
             if nbar == 1e-4:
                 suffix = '1en4'
             savefname = sdir_stats + '/summary_stats_weighted_rsd_' + str(isim) + '_nbar_' + suffix + '.pk'
         elif cat_type == 'constant_Mmin':
-            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth_nsubv_vel_10k/'
+            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/test_mp/'
             if lgMmin == 13.0:
                 suffix = '13p0'
             if lgMmin == 12.5:
@@ -216,8 +216,7 @@ def calc_summary(isim, cat_type='constant_nbar',nbar=4e-4, lgMmin=13.0):
                 wst_op = gw.ScatteringOp(df_shape, J, Q,
                                         moments=moments,
                                         kc=kc,
-                                        scattering=True,
-                                        device=device)
+                                        scattering=True)
                 s0_truth, s1_truth, s2_truth = wst_op(df)
 
                 s0_truth = s0_truth.cpu().numpy()
@@ -235,8 +234,8 @@ def calc_summary(isim, cat_type='constant_nbar',nbar=4e-4, lgMmin=13.0):
                 wst_op = gw.ScatteringOp(df_shape, J, Q,
                                         moments=moments,
                                         kc=kc,
-                                        scattering=True,
-                                        device=device)
+                                        scattering=True
+                                        )
                 s0_mock, s1_mock, s2_mock = wst_op(df)
 
                 s0_mock = s0_mock.cpu().numpy()
@@ -263,16 +262,16 @@ def calc_summary(isim, cat_type='constant_nbar',nbar=4e-4, lgMmin=13.0):
         print(f"Error in calc_summary: {e}")
         return
 
-if __name__ == "__main__":
-    n1 = int(sys.argv[1])
-    n2 = int(sys.argv[2])
-    for test_id in (range(n1, n2)):
-        calc_summary(test_id)        
-        # calc_summary(test_id, cat_type='constant_Mmin', lgMmin=13.0)
-    # # test_id = int(sys.argv[1])
-    # # save_cats(test_id)
-    # for test_id in (range(361, 362)):
-    #     save_cats(test_id, verbose=True)
+# if __name__ == "__main__":
+#     n1 = int(sys.argv[1])
+#     n2 = int(sys.argv[2])
+#     for test_id in (range(n1, n2)):
+#         calc_summary(test_id)        
+#         # calc_summary(test_id, cat_type='constant_Mmin', lgMmin=13.0)
+#     # # test_id = int(sys.argv[1])
+#     # # save_cats(test_id)
+#     # for test_id in (range(361, 362)):
+#     #     save_cats(test_id, verbose=True)
 
 
 # import multiprocessing as mp
@@ -308,3 +307,40 @@ if __name__ == "__main__":
 #     # Close the pool and wait for tasks to finish
 #     pool.close()
 #     pool.join()
+
+import torch.multiprocessing as mp
+if __name__ == "__main__":
+    # Get input arguments for simulations range
+    n1 = int(sys.argv[1])
+    n2 = int(sys.argv[2])
+    n_sims = n2 - n1
+    n_sims_offset = n1
+
+    # Get the number of available CPU cores
+    n_cores = mp.cpu_count()
+    print(f"Number of CPU cores available: {n_cores}")
+
+    # Set up multiprocessing pool with torch.multiprocessing
+    mp.set_start_method('spawn')  # 'spawn' is safer for PyTorch
+
+    # Create a pool of worker processes
+    pool = mp.Pool(processes=n_cores)
+
+    # Distribute the simulations across the available cores
+    sims_per_core = n_sims // n_cores
+    sim_ranges = [(n_sims_offset + i * sims_per_core, n_sims_offset + (i + 1) * sims_per_core) for i in range(n_cores)]
+
+    # Handle any remaining simulations
+    remaining_sims = n_sims % n_cores
+    if remaining_sims > 0:
+        sim_ranges[-1] = (sim_ranges[-1][0], sim_ranges[-1][1] + remaining_sims)
+
+    # Run calc_summary function for each simulation range in parallel
+    results = [pool.apply_async(calc_summary, args=(ji,)) for sim_range in sim_ranges for ji in range(*sim_range)]
+
+    # Wait for all tasks to complete
+    [result.get() for result in results]
+
+    # Close the pool and wait for tasks to finish
+    pool.close()
+    pool.join()

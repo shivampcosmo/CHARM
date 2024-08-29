@@ -42,15 +42,23 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import matplotlib.pyplot as pl
 import scipy as sp
 import os
+from datetime import datetime
+
 
 def save_cats(test_id, verbose=False):
 
     import pickle as pk
     # save_fname_cats = f'/mnt/home/spandey/ceph/CHARM/data/halo_cats_charm_truth/halo_cat_pos_vel_LH_{test_id}.pk'
     save_fname_cats = f'/mnt/home/spandey/ceph/CHARM/data/halo_cats_charm_truth_nsubv_vel_10k/halo_cat_pos_vel_LH_{test_id}.pk'    
+
     # if file does not exist:
     # if not os.path.exists(save_fname_cats):
-    if 1:        
+
+    last_modified_time = os.path.getmtime(save_fname_cats)
+    last_modified_date = datetime.fromtimestamp(last_modified_time)
+    date_mod = last_modified_date.strftime('%d')
+    if date_mod != '29':   
+             
         try:
             print('LH: ', test_id)
 

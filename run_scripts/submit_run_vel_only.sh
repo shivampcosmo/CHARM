@@ -3,7 +3,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=12
 #SBATCH --time=8:00:00
-#SBATCH --job-name=test4_vel
+#SBATCH --job-name=test5_vel
 #SBATCH -p gpuxl
 #SBATCH --mem=1000G
 #SBATCH --gpus-per-node=4

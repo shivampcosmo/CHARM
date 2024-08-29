@@ -23,7 +23,8 @@ def save_halo_cats(isim, mass_type='fof'):
 
 
     if 'rockstar' in mass_type:
-        snap_dir_base = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/Rockstar/latin_hypercube_HR'
+        # snap_dir_base = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/Rockstar/latin_hypercube_HR'
+        snap_dir_base = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/Rockstar/fiducial_HR'        
         verbose = False   #print information on progress
         snapdir = snap_dir_base + '/' + str(isim)  #folder hosting the catalogue
         rockstar = np.loadtxt(snapdir + '/out_' + str(snapnum) + '_pid.list')
@@ -38,7 +39,8 @@ def save_halo_cats(isim, mass_type='fof'):
         vel_h_truth = rockstar[:,header.index('VX'):header.index('VZ')+1]
 
     if 'fof' in mass_type:
-        snap_dir_base = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/FoF/latin_hypercube_HR'
+        # snap_dir_base = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/FoF/latin_hypercube_HR'
+        snap_dir_base = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/FoF/fiducial_HR'        
         snapdir = snap_dir_base + '/' + str(isim)  #folder hosting the catalogue
         FoF = readfof.FoF_catalog(snapdir, snapnum, long_ids=False, swap=False, SFR=False, read_IDs=False)
         # get the properties of the halos
@@ -51,7 +53,8 @@ def save_halo_cats(isim, mass_type='fof'):
     Mmin_cut_str = '5e12'
     n_batch = 8
 
-    root_out = '/mnt/home/spandey/ceph/Quijote/data_NGP_self_LH'
+    # root_out = '/mnt/home/spandey/ceph/Quijote/data_NGP_self_LH'
+    root_out = '/mnt/home/spandey/ceph/Quijote/data_NGP_self'    
     folder_out = '%s/%d'%(root_out,isim)
     # create output folder if it does not exists
     if not(os.path.exists(folder_out)):
@@ -75,7 +78,8 @@ def save_halo_cats(isim, mass_type='fof'):
     zarray = np.copy(xarray)
 
     import pickle as pk
-    vel_load_dir = '/mnt/home/spandey/ceph/Quijote/data_NGP_self_fastpm_LH/'
+    # vel_load_dir = '/mnt/home/spandey/ceph/Quijote/data_NGP_self_fastpm_LH/'
+    vel_load_dir = '/mnt/home/spandey/ceph/Quijote/data_NGP_self/fastpm/'    
     df = pk.load(open(vel_load_dir + f'{isim}/velocity_HR_full_m_res_128_z=0.5_nbatch_8_nfilter_3_ncnn_0.pk', 'rb'))['velocity_cic_unpad_combined']
     vx_mesh_load = 1000.*df[0,...]
     vy_mesh_load = 1000.*df[1,...]
@@ -220,29 +224,5 @@ def save_halo_cats(isim, mass_type='fof'):
 
 import multiprocessing as mp
 if __name__ == '__main__':
-    n_sims_offset = 0
-    n_sims = 2000
-    n_cores = mp.cpu_count()
-    print(n_cores)
-
-    # Create a pool of worker processes
-    pool = mp.Pool(processes=n_cores)
-
-    # Distribute the simulations across the available cores
-    sims_per_core = n_sims // n_cores
-    sim_ranges = [(n_sims_offset + i * sims_per_core, n_sims_offset + (i + 1) * sims_per_core) for i in range(n_cores)]
-
-    # Handle any remaining simulations
-    remaining_sims = n_sims % n_cores
-    if remaining_sims > 0:
-        sim_ranges[-1] = (sim_ranges[-1][0], sim_ranges[-1][1] + remaining_sims)
-
-    # Run save_cic_densities function for each simulation range in parallel
-    results = [pool.apply_async(save_halo_cats, args=(ji,)) for sim_range in sim_ranges for ji in range(*sim_range)]
-
-    # Wait for all tasks to complete
-    [result.get() for result in results]
-
-    # Close the pool and wait for tasks to finish
-    pool.close()
-    pool.join()
+    for ji in range(10):
+        save_halo_cats(ji)

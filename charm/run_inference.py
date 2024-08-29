@@ -46,7 +46,7 @@ try:
 except:
     data = 'mock'
 
-ldir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth/'
+ldir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth_nsubv_vel_10k/'
 isim_array = np.arange(0,1800)
 for ji in tqdm(range(len(isim_array))):
     isim = isim_array[ji]
@@ -280,7 +280,7 @@ saved = {'samples_all_tarp': samples_all_tarp, 'true_all_tarp': true_all_tarp,
         'samples_all_transformed': samples_all_transformed, 'true_all_transformed': true_all_transformed}
         
 import pickle as pk
-pk.dump(saved, open(f'/mnt/home/spandey/ceph/CHARM/results/saved_tarp_{pos}_Pk_{pk_type}_{inference}_data_{data}.pk', 'wb'))
+pk.dump(saved, open(f'/mnt/home/spandey/ceph/CHARM/results/saved_nsubv_vel10k_tarp_{pos}_Pk_{pk_type}_{inference}_data_{data}.pk', 'wb'))
 
 ecp, alpha = tarp.get_tarp_coverage(
             samples_all_tarp, true_all_tarp,
@@ -310,7 +310,7 @@ pl.tick_params(axis='both', which='major', labelsize=15)
 pl.tick_params(axis='both', which='minor', labelsize=15)
 ax.set_ylabel("Expected Coverage", size=15)
 ax.set_xlabel("Credibility Level", size=15)
-pl.savefig(sdirf + f'TARP_coverage_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
+pl.savefig(sdirf + f'TARP_nsubv_vel10k_coverage_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
 
 # samples_all_tarp.shape, true_all_tarp.shape
 # true_all_tarp_repeat = np.tile(true_all_tarp, (1000, 1, 1))
@@ -324,13 +324,13 @@ pl.tick_params(axis='both', which='major', labelsize=15)
 pl.tick_params(axis='both', which='minor', labelsize=15)
 pl.xlabel('Om$ true', size=15)
 pl.ylabel('Om inferred', size=15)
-pl.savefig(sdirf + f'Om_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
+pl.savefig(sdirf + f'Om_nsubv_vel10k_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
 
 pl.figure()
 pl.errorbar(true_all_transformed[:,-1], samples_all_tarp_mean[:,-1], yerr = samples_all_tarp_std[:,-1], fmt = 'o')
 pl.plot([0.55, 1.05], [0.55, 1.05], 'k--')
 pl.xlabel('sigma8 true', size=15)
 pl.ylabel('sigma8 inferred', size=15)
-pl.savefig(sdirf + f'sig8_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
+pl.savefig(sdirf + f'sig8_nsubv_vel10k_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
 
 

@@ -49,7 +49,8 @@ def save_cats(test_id, verbose=False):
     # save_fname_cats = f'/mnt/home/spandey/ceph/CHARM/data/halo_cats_charm_truth/halo_cat_pos_vel_LH_{test_id}.pk'
     save_fname_cats = f'/mnt/home/spandey/ceph/CHARM/data/halo_cats_charm_truth_nsubv_vel_10k/halo_cat_pos_vel_LH_{test_id}.pk'    
     # if file does not exist:
-    if not os.path.exists(save_fname_cats):
+    # if not os.path.exists(save_fname_cats):
+    if 1:        
         try:
             print('LH: ', test_id)
 
@@ -331,7 +332,8 @@ def save_cats(test_id, verbose=False):
             # ldir_cp = '/mnt/home/spandey/ceph/CHARM/model_checkpoints/test0_vel/'
 
             # checkpoint = torch.load(ldir_cp + f'test_model_bestfit_6600.pth', map_location=device_id)
-            checkpoint = torch.load(ldir_cp + f'test_model_bestfit_4800_moredata.pth', map_location=device_id)            
+            # checkpoint = torch.load(ldir_cp + f'test_model_bestfit_1000_evenmoredata_nsub11k.pth', map_location=device_id)            
+            checkpoint = torch.load(ldir_cp + f'test_model_bestfit_5600_evenmoredata_nsub11k.pth', map_location=device_id)            
             # print(iter)
             model_comb_vel.load_state_dict(checkpoint['state_dict'])
             model_comb_vel.eval()

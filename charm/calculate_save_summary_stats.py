@@ -31,18 +31,18 @@ def setup_hod(hmass, nbar=4e-4, satfrac=0.2, bs=1000, alpha_fid=0.76):
 
 def calc_summary(isim, cat_type='constant_nbar',nbar=4e-4, lgMmin=13.0):
     try:
-        ldir = '/mnt/home/spandey/ceph/CHARM/data/halo_cats_charm_truth/'
+        ldir = '/mnt/home/spandey/ceph/CHARM/data/halo_cats_charm_truth_nsubv_vel_10k/'
         LH_cosmo_val_file = '/mnt/home/spandey/ceph/Quijote/latin_hypercube_params.txt'
 
         if cat_type == 'constant_nbar':
-            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth/'
+            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth_nsubv_vel_10k/'
             if nbar == 4e-4:
                 suffix = '4en4'
             if nbar == 1e-4:
                 suffix = '1en4'
             savefname = sdir_stats + '/summary_stats_weighted_rsd_' + str(isim) + '_nbar_' + suffix + '.pk'
         elif cat_type == 'constant_Mmin':
-            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth/'
+            sdir_stats = '/mnt/home/spandey/ceph/CHARM/data/summary_stats_charm_truth_nsubv_vel_10k/'
             if lgMmin == 13.0:
                 suffix = '13p0'
             if lgMmin == 12.5:
@@ -265,7 +265,8 @@ if __name__ == "__main__":
     n1 = int(sys.argv[1])
     n2 = int(sys.argv[2])
     for test_id in (range(n1, n2)):
-        calc_summary(test_id, cat_type='constant_Mmin', lgMmin=13.0)
+        calc_summary(test_id)        
+        # calc_summary(test_id, cat_type='constant_Mmin', lgMmin=13.0)
     # # test_id = int(sys.argv[1])
     # # save_cats(test_id)
     # for test_id in (range(361, 362)):

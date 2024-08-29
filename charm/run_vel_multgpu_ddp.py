@@ -434,7 +434,7 @@ def run_func():
 
     # checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_6600.pth', map_location=device_id)
     # checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_6600.pth', map_location=f'cuda:{device_id}')        
-    checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_4800_moredata.pth', map_location=f'cuda:{device_id}')            
+    checkpoint = torch.load(sdir_model_checkpoint + f'test_model_bestfit_1000_evenmoredata_nsub11k.pth', map_location=f'cuda:{device_id}')            
     model.load_state_dict(checkpoint['state_dict'])
 
 
@@ -518,7 +518,7 @@ def run_func():
                 state = {'loss_min': loss_min, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                             'loss':loss}
 
-                save_bestfit_model_name = sdir_model_checkpoint + 'test_model_bestfit_' + str(iter_num) + '_evenmoredata_nsub11k.pth'
+                save_bestfit_model_name = sdir_model_checkpoint + 'test_model_bestfit_' + str(1000+iter_num) + '_evenmoredata_nsub11k.pth'
                 torch.save(
                     state, save_bestfit_model_name
                     )

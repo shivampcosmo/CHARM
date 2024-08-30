@@ -465,7 +465,7 @@ def get_Pk_mock(pos_h_mock, lgMass_mock, grid = 384, BoxSize = 3000.0, lgMmin=13
     MASL.MA(pos_h_mock, mesh_mock, BoxSize, MAS)
     mesh_mock /= np.mean(mesh_mock, dtype=np.float32);  mesh_mock -= 1.0
     Pk_mock = PKL.Pk(mesh_mock, BoxSize, axis=0, MAS=None)
-    return Pk_mock
+    return Pk_mock, lgMass_mock, pos_h_mock
 
 
 def get_Pk_quijote(snapdir, snapnum, grid = 384, BoxSize = 3000.0, lgMmin=13.7, MAS='NGP'):

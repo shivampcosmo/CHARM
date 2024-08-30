@@ -477,6 +477,13 @@ def get_Pk_quijote(snapdir, snapnum, grid = 384, BoxSize = 3000.0, lgMmin=13.7, 
     pos_h_truth = rockstar[:,header.index('X'):header.index('Z')+1]
     index_M = header.index('M200c')                    
     mass_truth = rockstar[:,index_M]  #Halo masses in Msun/h
+
+    index_pid = header.index('PID')
+    id_halo = np.where(rockstar[:,index_pid] == -1)[0]
+
+    pos_h_truth = pos_h_truth[id_halo]
+    mass_truth = mass_truth[id_halo]
+
     lgMass_truth = np.log10(mass_truth).astype(np.float32)
 
     indsel = np.where(mass_truth > 10**(lgMmin))[0]
@@ -487,23 +494,23 @@ def get_Pk_quijote(snapdir, snapnum, grid = 384, BoxSize = 3000.0, lgMmin=13.7, 
     MASL.MA(pos_h_truth, mesh_truth, BoxSize, MAS)
     mesh_truth /= np.mean(mesh_truth, dtype=np.float32);  mesh_truth -= 1.0
     Pk_truth = PKL.Pk(mesh_truth, BoxSize, axis=0, MAS=None)
-    return Pk_truth
+    return Pk_truth, lgMass_truth, pos_h_truth
 
 
 # Get the power from the mock catalog:
-Pk_mock = get_Pk_mock(pos_h_mock, lgMass_mock, grid = 384, BoxSize = 3000.0)
+Pk_mock, _, _ = get_Pk_mock(pos_h_mock, lgMass_mock, grid = 384, BoxSize = 3000.0)
 
 
 # Get the power from various Quijote simulations:
 snapnum = 3
 snap_dir_3gpc = '/mnt/home/fvillaescusa/ceph/Quijote/Matt/Sims/fiducial/Rockstar'
-Pk_quijote_3gpc = get_Pk_quijote(snap_dir_3gpc, snapnum, grid = 384, BoxSize = 3000.0)
+Pk_quijote_3gpc, _, _ = get_Pk_quijote(snap_dir_3gpc, snapnum, grid = 384, BoxSize = 3000.0)
 
 snap_dir_1gpc_HR = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/Rockstar/fiducial_HR/1/'
-Pk_quijote_1gpc_HR = get_Pk_quijote(snap_dir_1gpc_HR, snapnum, grid = 128, BoxSize = 1000.0)
+Pk_quijote_1gpc_HR, _, _ = get_Pk_quijote(snap_dir_1gpc_HR, snapnum, grid = 128, BoxSize = 1000.0)
 
 snap_dir_1gpc_LR = '/mnt/home/fvillaescusa/ceph/Quijote/Halos/Rockstar/fiducial/1/'
-Pk_quijote_1gpc_LR = get_Pk_quijote(snap_dir_1gpc_LR, snapnum, grid = 128, BoxSize = 1000.0)
+Pk_quijote_1gpc_LR, _, _ = get_Pk_quijote(snap_dir_1gpc_LR, snapnum, grid = 128, BoxSize = 1000.0)
 
 
 pl.figure()

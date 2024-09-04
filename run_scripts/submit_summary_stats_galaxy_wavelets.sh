@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-gpu=12
-#SBATCH --time=24:00:00
-#SBATCH --job-name=save_wavelets
+#SBATCH --cpus-per-gpu=50
+#SBATCH --time=2:00:00
+#SBATCH --job-name=gpu_mp_save_wavelets
 #SBATCH -p gpu
+#SBATCH -C a100-40gb
 #SBATCH --mem=256G
 #SBATCH --gpus-per-node=1
 #SBATCH --output=/mnt/home/spandey/ceph/CHARM/run_scripts/slurm_logs/%x.%j.out
@@ -15,5 +16,5 @@ module load python
 source ~/miniconda3/bin/activate nbodykit
 
 cd /mnt/home/spandey/ceph/CHARM/charm/
-# srun python calculate_save_summary_stats.py 1200 1800
-srun python calc_summary_stats_galaxy_wavelets.py 1200 1800
+time srun python calc_summary_stats_galaxy_wavelets.py 0 2000 25
+

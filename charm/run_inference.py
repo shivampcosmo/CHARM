@@ -135,9 +135,9 @@ prior = utils.BoxUniform(
 
 if inference == 'SNPE':
     neural_posterior = utils.posterior_nn(model="maf", hidden_features=30, num_transforms=3)
-    inference = SNPE(prior=prior, density_estimator=neural_posterior)
-    density_estimator = inference.append_simulations(theta_all, x_all).train()
-    posterior = inference.build_posterior(density_estimator)
+    inferer = SNPE(prior=prior, density_estimator=neural_posterior)
+    density_estimator = inferer.append_simulations(theta_all, x_all).train()
+    posterior = inferer.build_posterior(density_estimator)
 
 if inference == 'SNLE':
     inferer = SNLE(prior, density_estimator="maf")
@@ -255,7 +255,6 @@ for ji in range(len(isim_obs_array)):
     sig8_mock_all_std[ji] = np.std(samples_all_transformed[:,1])
 
 
-import tarp
 references = "random"
 metric = 'euclidean'
 bootstrap= True
@@ -280,9 +279,13 @@ saved = {'samples_all_tarp': samples_all_tarp, 'true_all_tarp': true_all_tarp,
         'samples_all_transformed': samples_all_transformed, 'true_all_transformed': true_all_transformed}
         
 import pickle as pk
-pk.dump(saved, open(f'/mnt/home/spandey/ceph/CHARM/results/saved_nsubv_vel10k_tarp_{pos}_Pk_{pk_type}_{inference}_data_{data}.pk', 'wb'))
+pk.dump(saved, open(f'/mnt/home/spandey/ceph/CHARM/results/saved_nsubv_vel10k_try2_tarp_{pos}_Pk_{pk_type}_{inference}_data_{data}.pk', 'wb'))
 
-ecp, alpha = tarp.get_tarp_coverage(
+import sys, os
+sys.path.append('/mnt/home/spandey/ceph/tarp/src/tarp')
+import drp
+
+ecp, alpha = drp.get_tarp_coverage(
             samples_all_tarp, true_all_tarp,
             references=references, metric=metric,
             norm=norm, bootstrap=bootstrap,
@@ -310,7 +313,7 @@ pl.tick_params(axis='both', which='major', labelsize=15)
 pl.tick_params(axis='both', which='minor', labelsize=15)
 ax.set_ylabel("Expected Coverage", size=15)
 ax.set_xlabel("Credibility Level", size=15)
-pl.savefig(sdirf + f'TARP_nsubv_vel10k_coverage_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
+pl.savefig(sdirf + f'TARP_nsubv_vel10k_try2_coverage_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
 
 # samples_all_tarp.shape, true_all_tarp.shape
 # true_all_tarp_repeat = np.tile(true_all_tarp, (1000, 1, 1))
@@ -324,13 +327,13 @@ pl.tick_params(axis='both', which='major', labelsize=15)
 pl.tick_params(axis='both', which='minor', labelsize=15)
 pl.xlabel('Om$ true', size=15)
 pl.ylabel('Om inferred', size=15)
-pl.savefig(sdirf + f'Om_nsubv_vel10k_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
+pl.savefig(sdirf + f'Om_nsubv_vel10k_try2_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
 
 pl.figure()
 pl.errorbar(true_all_transformed[:,-1], samples_all_tarp_mean[:,-1], yerr = samples_all_tarp_std[:,-1], fmt = 'o')
 pl.plot([0.55, 1.05], [0.55, 1.05], 'k--')
 pl.xlabel('sigma8 true', size=15)
 pl.ylabel('sigma8 inferred', size=15)
-pl.savefig(sdirf + f'sig8_nsubv_vel10k_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
+pl.savefig(sdirf + f'sig8_nsubv_vel10k_try2_inferred_{pos}_Pk_{pk_type}_{inference}_data_{data}.pdf', bbox_inches='tight')
 
 

@@ -2,7 +2,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=12
-#SBATCH --time=8:00:00
+#SBATCH --time=24:00:00
 #SBATCH --job-name=save_cats
 #SBATCH -p gpu
 #SBATCH --mem=256G
@@ -15,4 +15,5 @@ module load python
 source ~/miniconda3/bin/activate nbodykit
 
 cd /mnt/home/spandey/ceph/CHARM/charm/
-srun python calculate_save_summary_stats.py 0 600
+# srun python calculate_save_summary_stats.py 600 1200
+srun python calc_summary_stats_galaxy_wavelets.py 0 600

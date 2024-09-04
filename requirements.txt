@@ -10,4 +10,5 @@ Cython
 Pylians
 torch
 sparse
+smt
 h5py

@@ -1,0 +1,43 @@
+method: random
+num_configs : 256
+metric:
+  goal: maximize
+  name: best_validation_log_prob
+parameters:
+  batch:
+    distribution: q_log_uniform_values
+    max: 512
+    min: 96
+    q: 8
+  lr:
+    distribution: q_log_uniform_values
+    max: 1e-3
+    min: 1e-5
+    q: 1e-05
+  nhidden:
+    distribution: q_log_uniform_values
+    max: 256
+    min: 16
+    q: 8
+  ntransforms:
+    distribution: int_uniform
+    max: 16
+    min: 4
+  nblocks:
+    distribution: int_uniform
+    max: 5
+    min: 2
+  out_dim_embed:
+    distribution: q_log_uniform_values
+    max: 64
+    min: 8
+    q: 8
+  num_layers_embed:
+    distribution: int_uniform
+    max: 5
+    min: 2
+  num_hidden_embed:
+    distribution: q_log_uniform_values
+    max: 64
+    min: 16
+    q: 8

@@ -5,6 +5,10 @@ __pycache__/
 sbi-logs/
 slurm_logs/
 results/
+output/
+sbi-logs/
+snle_configs/
+snpe_configs/
 data/
 model_checkpoints/
 arxiv/

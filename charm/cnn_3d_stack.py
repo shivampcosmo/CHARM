@@ -5,7 +5,7 @@ import numpy as np
 
 class ResidualBlock(nn.Module):
     """
-    Residual block for 3D CNN
+    Residual network block
     """
 
     def __init__(self, nf_inp, nf_out, ksize, padding=None, act='tanh'):

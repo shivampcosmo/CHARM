@@ -2,8 +2,8 @@ import sys, os
 import numpy as np
 import sys, os
 from tqdm import tqdm
-import matplotlib
-import matplotlib.pyplot as pl
+# import matplotlib
+# import matplotlib.pyplot as pl
 import yaml
 import readfof
 import sys, os
@@ -268,43 +268,3 @@ if __name__ == "__main__":
     n2 = int(sys.argv[2])
     for test_id in (range(n1, n2)):
         calc_summary(test_id)        
-        # calc_summary(test_id, cat_type='constant_Mmin', lgMmin=13.0)
-    # # test_id = int(sys.argv[1])
-    # # save_cats(test_id)
-    # for test_id in (range(361, 362)):
-    #     save_cats(test_id, verbose=True)
-
-
-# import multiprocessing as mp
-# if __name__ == '__main__':
-#     # n_sims = 1100
-#     # n_sims_offset = 1100
-#     # n_sims = 900
-#     n1 = int(sys.argv[1])
-#     n2 = int(sys.argv[2])
-#     n_sims = n2 - n1
-#     n_sims_offset = n1
-#     n_cores = mp.cpu_count()
-#     print(n_cores)
-
-#     # Create a pool of worker processes
-#     pool = mp.Pool(processes=n_cores)
-
-#     # Distribute the simulations across the available cores
-#     sims_per_core = n_sims // n_cores
-#     sim_ranges = [(n_sims_offset + i * sims_per_core, n_sims_offset + (i + 1) * sims_per_core) for i in range(n_cores)]
-
-#     # Handle any remaining simulations
-#     remaining_sims = n_sims % n_cores
-#     if remaining_sims > 0:
-#         sim_ranges[-1] = (sim_ranges[-1][0], sim_ranges[-1][1] + remaining_sims)
-
-#     # Run save_cic_densities function for each simulation range in parallel
-#     results = [pool.apply_async(calc_summary, args=(ji,)) for sim_range in sim_ranges for ji in range(*sim_range)]
-
-#     # Wait for all tasks to complete
-#     [result.get() for result in results]
-
-#     # Close the pool and wait for tasks to finish
-#     pool.close()
-#     pool.join()

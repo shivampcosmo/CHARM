@@ -5,6 +5,10 @@ import sys, os
 import pathlib
 curr_path = pathlib.Path().absolute()
 sys.path.append(str(curr_path))
+if torch.cuda.is_available():
+    dev = torch.device("cuda")
+else:
+    dev = torch.device("cpu")
 try:
     from .cnn_3d_stack import CNN3D_stackout
 except:
@@ -317,17 +321,17 @@ class COMBINED_Model(nn.Module):
 
             if use_truth_M1:
                 mask_tensor_M1_samp = (mask_M1_truth)[jb, ...][None, ...].T
-                mask_tensor_M1_samp = mask_tensor_M1_samp.float().cuda()
+                mask_tensor_M1_samp = mask_tensor_M1_samp.float().to(dev)
 
             else:
                 mask_tensor_M1_samp = torch.from_numpy(mask_samp_M1)
-                mask_tensor_M1_samp = mask_tensor_M1_samp.float().cuda()
+                mask_tensor_M1_samp = mask_tensor_M1_samp.float().to(dev)
             mask_tensor_M1_samp_out.append(mask_tensor_M1_samp)
             if use_truth_Mdiff:
                 mask_tensor_Mdiff_samp = (mask_Mdiff_truth[jb])
             else:
                 mask_tensor_Mdiff_samp = torch.from_numpy(mask_samp_M_diff)
-                mask_tensor_Mdiff_samp = mask_tensor_Mdiff_samp.float().cuda()
+                mask_tensor_Mdiff_samp = mask_tensor_Mdiff_samp.float().to(dev)
             mask_tensor_Mdiff_samp_out.append(mask_tensor_Mdiff_samp)
 
             if use_truth_Nhalo:
@@ -335,7 +339,7 @@ class COMBINED_Model(nn.Module):
             else:
                 if train_multi:
                     Nhalo_conditional = torch.Tensor(np.array([Ntot_samp]).T)
-                    Nhalo_conditional = Nhalo_conditional.float().cuda()
+                    Nhalo_conditional = Nhalo_conditional.float().to(dev)
                 else:
                     raise ValueError('Must use truth Nhalo if not training Ntot')
 

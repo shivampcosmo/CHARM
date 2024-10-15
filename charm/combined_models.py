@@ -528,3 +528,140 @@ class COMBINED_Model_vel_only(nn.Module):
             vel_samp_out.append(vel_samp_final.numpy())            
 
         return np.array(vel_samp_out)
+
+
+class COMBINED_Model_conc_only(nn.Module):
+    """
+    Combined model for the inferring velocities of halos.
+    """
+
+    def __init__(
+        self,
+        priors_all,
+        conc_model,
+        ndim,
+        ksize,
+        nside_in,
+        nside_out,
+        nbatch,
+        ninp,
+        nfeature,
+        nout,
+        layers_types=['cnn', 'res', 'res', 'res'],
+        act='tanh',
+        padding='valid',
+        ):
+        super().__init__()
+        self.priors_all = priors_all
+        self.conc_model = conc_model
+        self.nbatch = nbatch
+        self.nout = nout
+        self.ninp = ninp
+
+        self.conv_layers = CNN3D_stackout(
+            ksize,
+            nside_in,
+            nside_out,
+            nbatch,
+            ninp,
+            nfeature,
+            nout,
+            layers_types=layers_types,
+            act=act,
+            padding=padding
+            )
+        self.ndim = ndim
+
+    def forward(
+        self,
+        x_conc,
+        cond_x,
+        cond_x_nsh,
+        cond_cosmo,
+        Nhalos_truth_all,
+        Mhalos_truth_all,
+        mask_xconc_truth_all,
+        LOCAL_BIASING=False,
+        ):
+        device = cond_x.device
+        nbatches = cond_x.shape[0]
+        loss_conc = torch.zeros(1, device=device)
+        for jb in range(nbatches):
+            indsel_Nhalo_gt0_jb = torch.where(Nhalos_truth_all[jb,:,0] > 0)[0]
+
+            if LOCAL_BIASING:
+                cond_out = cond_x_nsh[jb]
+            else:
+                cond_out = self.conv_layers(cond_x[jb])
+                cond_out = torch.cat((cond_out, cond_x_nsh[jb]), dim=1)
+            if cond_cosmo is not None:
+                cond_out = torch.cat((cond_out, cond_cosmo[jb]), dim=1)
+
+            if Mhalos_truth_all is not None:
+                cond_out = torch.cat([Mhalos_truth_all[jb].to(device), cond_out], dim=1)
+
+            mask_sel_conc = indsel_Nhalo_gt0_jb.to(device)                
+            if jb == 0:
+                # import pdb; pdb.set_trace()
+                loss_conc = torch.mean(-self.conc_model.forward(x_conc[jb][mask_sel_conc], cond_out[mask_sel_conc], mask_xconc_truth_all[jb][mask_sel_conc]))
+            else:
+                loss_conc += torch.mean(-self.conc_model.forward(x_conc[jb][mask_sel_conc], cond_out[mask_sel_conc], mask_xconc_truth_all[jb][mask_sel_conc]))
+        loss = (loss_conc)
+        return loss
+
+    def inverse(
+        self,
+        LOCAL_BIASING=False,
+        cond_x=None,
+        cond_x_nsh=None,
+        cond_cosmo=None,
+        mask_conc_truth=None,
+        Nhalos_truth=None,
+        Mhalos_truth=None,
+        conc_truth=None,
+        ):
+        device = cond_x.device
+        nbatches = cond_x.shape[0]
+        conc_samp_out = []
+        mask_tensor_M1_samp_out, mask_tensor_Mdiff_samp_out = [], []
+        cond_inp_M1_out = []
+        for jb in range(nbatches):
+            if LOCAL_BIASING:
+                cond_out = cond_x_nsh[jb]
+            else:
+                cond_out = self.conv_layers(cond_x[jb])
+                cond_out = torch.cat((cond_out, cond_x_nsh[jb]), dim=1)
+            if cond_cosmo is not None:
+                cond_out = torch.cat((cond_out, cond_cosmo[jb]), dim=1)
+
+            if Mhalos_truth is not None:
+                cond_out = torch.cat([Mhalos_truth[jb].to(device), cond_out], dim=1)
+
+            Ntot_samp = torch.Tensor(Nhalos_truth)
+
+            Ntot_samp = Ntot_samp.cpu().detach().numpy()
+            nvox_batch = self.nout // self.nbatch
+            nvox_batch = 1
+            Ntot_samp_rs = Ntot_samp.reshape(-1, nvox_batch**3)
+            nsim, nvox = Ntot_samp_rs.shape[0], Ntot_samp_rs.shape[1]
+            mask_samp_all = np.zeros((nsim, nvox, self.ndim))
+            idx = np.arange(self.ndim)[None, None, :]
+            mask_samp_all[np.arange(nsim)[:, None, None],
+                          np.arange(nvox)[None, :, None], idx] = (idx < Ntot_samp_rs[..., None])
+
+            # mask_samp_all = np.repeat(mask_samp_all[...,None], 3, axis=-1)
+            # mask_samp_all = mask_samp_all.reshape(*mask_samp_all.shape[:-2],-1)
+
+            mask_conc = mask_samp_all.reshape(nsim * nvox, self.ndim)
+            mask_conc_tensor = torch.Tensor(mask_conc).float().to(device)
+
+            indsel_Nhalo_gt0_jb = torch.where(Nhalos_truth[jb,:,0] > 0)[0]
+            mask_sel_conc = indsel_Nhalo_gt0_jb.to(device)              
+            conc_samp, _ = self.conc_model.inverse(cond_out[mask_sel_conc], mask_conc_tensor[mask_sel_conc])
+            conc_samp_final = torch.zeros(Nhalos_truth.shape[1], conc_samp.shape[1])
+            conc_samp_final[indsel_Nhalo_gt0_jb] = conc_samp.detach().cpu()
+            # import pdb; pdb.set_trace()
+            # vel_samp_out.append(vel_samp_final.detach().cpu().numpy())
+            conc_samp_out.append(conc_samp_final.numpy())            
+
+        return np.array(conc_samp_out)

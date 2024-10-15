@@ -27,10 +27,11 @@ try:
 except:
     from all_models import *
 try:
-    from .utils_data_prep_cosmo_vel import *
+    from .utils_data_prep_cosmo_vel_conc_peak import *
 except:
-    from utils_data_prep_cosmo_vel import *
+    from utils_data_prep_cosmo_vel_conc_peak import *
 from colossus.cosmology import cosmology
+from colossus.halo import concentration
 params = {'flat': True, 'H0': 67.11, 'Om0': 0.3175,
           'Ob0': 0.049, 'sigma8': 0.834, 'ns': 0.9624}
 cosmo = cosmology.setCosmology('myCosmo', **params)
@@ -41,8 +42,8 @@ curr_path = pathlib.Path(__file__).parent.resolve()
 
 class get_model_interface:
 
-    def __init__(self, run_config_massNtot_name='train_massNtot_config.yaml', run_config_vel_name='train_vel_config.yaml', 
-                trained_massmodel_name='charm_model_massNtot_bestfit_v2.pth', trained_velmodel_name='charm_model_vel_bestfit_v2.pth'):
+    def __init__(self, run_config_massNtot_name='train_massNtot_config.yaml', run_config_vel_name='train_vel_config.yaml', run_config_conc_name='train_conc_config.yaml',
+                trained_massmodel_name='charm_model_massNtot_bestfit_v2.pth', trained_velmodel_name='charm_model_vel_bestfit_v2.pth', trained_concmodel_name='charm_model_conc_bestfit_v2.pth'):
         try:
             with open(run_config_massNtot_name, "r") as file_object:
                 config = yaml.load(file_object, Loader=yaml.SafeLoader)
@@ -62,6 +63,7 @@ class get_model_interface:
         self.nf = config_sims['nf']
         layers_types = config_sims['layers_types']
         z_inference = config_sims['z_inference']
+        self.z_inference = z_inference
         nc = 0
         for jl in range(len(layers_types)):
             if layers_types[jl] == 'cnn':
@@ -86,6 +88,7 @@ class get_model_interface:
         self.lgMmax = config_sims['lgMmax']
         stype = config_sims['stype']
         rescale_sub = config_sims['rescale_sub']
+        self.rescale_sub = rescale_sub
         lgMmincutstr = config_sims['lgMmincutstr']
         is_HR = config_sims['is_HR']
 
@@ -310,6 +313,73 @@ class get_model_interface:
         model_vel.eval()
         self.model_vel = model_vel
 
+
+        try:
+            with open(run_config_conc_name, "r") as file_object:
+                config_conc = yaml.load(file_object, Loader=yaml.SafeLoader)
+        except:
+            with open(f"{curr_path}/trained_configs/{run_config_conc_name}", "r") as file_object:
+                config_conc = yaml.load(file_object, Loader=yaml.SafeLoader)
+
+        config_sims_conc = config_conc['sim_settings']
+        self.cmin = config_sims_conc['cmin']
+        self.cmax = config_sims_conc['cmax']
+        config_net_conc = config_conc['network_settings']
+        K_conc = config_net_conc['K_conc']
+        B_conc = config_net_conc['B_conc']
+        nflows_conc_NSF = config_net_conc['nflows_conc_NSF']
+        self.cond_Mass_for_conc = config_net_conc['cond_Mass_for_conc']
+        base_dist_conc = config_net_conc['base_dist_conc']
+
+        ndim_mass = Nmax
+        ndim_conc = Nmax
+            
+        if self.cond_Mass_for_conc:
+            num_cond_conc = num_cond + ndim_mass
+        else:
+            num_cond_conc = num_cond
+            
+        model_conc = NSF_Autoreg_CNNcond(
+            dim=ndim_conc,
+            K=K_conc,
+            B=B_conc,
+            hidden_dim=hidden_dim_MAF,
+            num_cond=num_cond_conc,
+            nflows=nflows_conc_NSF,
+            base_dist=base_dist_conc,
+            mu_pos=True
+            )
+
+
+        model_conc = COMBINED_Model_conc_only(
+            None,
+            model_conc,
+            ndim_conc,
+            ksize,
+            ns_d,
+            self.ns_h,
+            1,
+            ninp,
+            nfeature_cnn,
+            nout_cnn,
+            layers_types=layers_types,
+            act='tanh',
+            padding='valid',
+            ).to(dev)
+
+        model_conc = torch.nn.DataParallel(model_conc)
+
+        try:
+            checkpoint = torch.load(trained_concmodel_name, map_location=dev)
+        except:
+            save_bestfit_model_name = f'{curr_path}/trained_models/{trained_concmodel_name}'
+            checkpoint = torch.load(save_bestfit_model_name, map_location=dev)
+            
+        model_conc.load_state_dict(checkpoint['state_dict'])
+        model_conc.eval()
+        self.model_conc = model_conc
+
+
     def process_input_density(self, rho_m_zg=None, rho_m_vel_zg=None,
                               rho_m_pad_zg=None, rho_m_vel_pad_zg=None,
                               cosmology_array=None, BoxSize=1000, test_LH_id=None,
@@ -439,6 +509,13 @@ class get_model_interface:
 
         Nhalos = save_subvol_Nhalo[0, ...]  # histogram of halos in each voxel
         M_halos = save_subvol_Mtot[0, ...]  # mass of halos in each voxel
+        M_halos_sort_norm = self.rescale_sub + (M_halos - self.lgMmin)/(self.lgMmax - self.lgMmin)
+        M_halos_sort_norm *= mask_subvol_Mtot[0, ...]
+        M_halos_sort_norm_condvel = M_halos_sort_norm.reshape(nax_h_test**3, -1)
+        indsel = np.where(M_halos_sort_norm_condvel < self.rescale_sub)
+        M_halos_sort_norm_condvel[indsel] = self.rescale_sub
+        indsel = np.where(M_halos_sort_norm_condvel == 0.0)
+        M_halos_sort_norm_condvel[indsel] = self.rescale_sub
 
         # create the meshgrid
         xall = (np.linspace(0, BoxSize, self.ns_h + 1))
@@ -504,8 +581,8 @@ class get_model_interface:
 
         vmax = 1000
         vmin = -1000
-        v_halos_diff_recomb = np.reshape(vel_samp_out, (1, 128, 128, 128, (self.ndim_diff + 1)*3))[0,...]
-        v_halos_diff_recomb = np.reshape(v_halos_diff_recomb, (128, 128, 128, (self.ndim_diff + 1), 3))
+        v_halos_diff_recomb = np.reshape(vel_samp_out, (1, self.ns_h, self.ns_h, self.ns_h, (self.ndim_diff + 1)*3))[0,...]
+        v_halos_diff_recomb = np.reshape(v_halos_diff_recomb, (self.ns_h, self.ns_h, self.ns_h, (self.ndim_diff + 1), 3))
 
         vx_diff_mock = []
         vy_diff_mock = []
@@ -534,11 +611,51 @@ class get_model_interface:
         vel_h_mock = np.vstack((vx_total_mock, vy_total_mock, vz_total_mock)).T
         vel_h_mock = vel_h_mock.astype('float32')
 
-        return pos_h_mock, lgMass_mock, vel_h_mock
+
+
+        if self.cond_Mass_for_conc:
+            Mhalos_truth_recomb_tensor = torch.Tensor(M_halos_sort_norm_condvel[None,...]).to(dev)
+        else:
+            Mhalos_truth_recomb_tensor = None
+
+        conc_samp_out = self.model_conc.module.inverse(cond_x=df_test_all_pad,
+                                    cond_x_nsh=df_test_all_unpad,
+                                    cond_cosmo=cosmo_val_test,
+                                    Nhalos_truth=Nhalos_truth_recomb_tensor,
+                                    Mhalos_truth=Mhalos_truth_recomb_tensor
+                                    )
+
+        c_halos_diff_recomb = np.reshape(conc_samp_out, (1, self.ns_h, self.ns_h, self.ns_h, (self.ndim_diff + 1)))[0,...]
+        c_halos_diff_recomb = np.reshape(c_halos_diff_recomb, (self.ns_h, self.ns_h, self.ns_h, (self.ndim_diff + 1)))
+
+        ch_diff_mock = []
+
+        for jx in range(self.ns_h):
+            for jy in range(self.ns_h):
+                for jz in range(self.ns_h):
+                        Nh_vox = int(Nhalos_pred_recomb[jx, jy, jz])
+                        if Nh_vox > 0:
+                            ch_diff_mock.append(((c_halos_diff_recomb[jx, jy, jz, :Nh_vox])*((self.cmax - self.cmin)) + self.cmin))
+
+        ch_diff_mock = np.concatenate(ch_diff_mock)
+
+        Om0 = cosmology_array[0]
+        Ob0 = cosmology_array[1]
+        h0 = cosmology_array[2]
+        ns = cosmology_array[3]
+        sigma8 = cosmology_array[4]
+        params = {'flat': True, 'H0': h0*100, 'Om0': Om0, 'Ob0': Ob0, 'sigma8': sigma8, 'ns': ns}
+        cosmo = cosmology.setCosmology('myCosmo', **params)
+        conc_func_mock = concentration.concentration(np.clip(10**lgMass_mock, 0.9*10**self.lgMmin, 1.1*10**self.lgMmax), '200c', float(self.z_inference), model = 'diemer19')
+
+        conc_h_mock = conc_func_mock + ch_diff_mock
+        conc_h_mock = np.clip(conc_h_mock, 1.0, 30.0)
+
+        return pos_h_mock, lgMass_mock, vel_h_mock, conc_h_mock
 
 
 
 # if __name__ == '__main__':
 #     model_interface = get_model_interface()
-#     pos_h_mock, lgMass_mock, vel_h_mock = model_interface.process_input_density(test_LH_id = 1, verbose=True)
+#     pos_h_mock, lgMass_mock, vel_h_mock, conc_h_mock = model_interface.process_input_density(test_LH_id = 1, verbose=True)
 #     import pdb; pdb.set_trace()

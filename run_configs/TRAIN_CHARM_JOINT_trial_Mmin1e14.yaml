@@ -1,0 +1,106 @@
+# TRAIN_CHARM_JOINT_trial_Mmin1e14.yaml
+# -------------------------------------
+# Trial run: Mmin = 1×10¹⁴ Msun/h (lgMmin = 14.0), small dataset
+# (200 sims), small encoder, 4 GPUs / 4 shards. Used to validate the
+# pipeline and architecture choices before committing to the full run.
+#
+# Inherits everything from BASE_CONFIG.yaml; this file only overrides
+# the keys that genuinely differ for the trial.
+#
+# Pipeline:
+#   Step 1 — halo processing (SLURM array 0-219):
+#     sbatch prep_data/run_process_halos_trial_Mmin1e14.sh
+#   Step 2 — shard building (SLURM array 0-4):
+#     sbatch prep_data/run_build_shards_trial_Mmin1e14.sh
+#   Step 3 — training (4 GPUs):
+#     torchrun --standalone --nproc_per_node=4 \
+#         charm/run_charm_joint_ddp.py \
+#         --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14.yaml
+
+extends: BASE_CONFIG.yaml
+
+sim_settings:
+  # Smaller dataset for fast iteration
+  nsims_train:  200        # sims 0–199
+  nsims_val:    20         # sims 200–219
+  nsims_test:   20         # sims 220–239
+  nsims:        200        # backward compatibility
+
+  # Mass cut and physical ranges
+  # At 1e14 Msun/h the mean halo separation is ~30–50 Mpc/h; most voxels
+  # have 0 halos and very few have more than 3.
+  lgMmin:  14.0            # log10(1e14)
+  lgMmax:  15.7
+  vmin:   -1350.
+  vmax:    1350.
+  cmin:    1.              # NOTE: trained on raw c_sim here (not residual)
+  cmax:    15.
+
+network_settings:
+  # Smaller encoder + heads for fast iteration
+  nfeature_cnn:   16       # nout_cnn = 4 * nfeature = 64
+  hidden_dim_MAF: 64
+
+train_settings:
+  # train_settings.shard_dir falls back to data_settings.shard_dir, which
+  # the loader auto-derives from Mmin_cut_str.
+  nsims_per_batch:  64
+
+  checkpoint_dir:    ../model_checkpoints/CHARM_JOINT_trial_Mmin1e14/
+  resume_checkpoint: null
+
+  log_every:    2
+  save_every:   10
+  val_every:    10
+
+  # Replace BASE phases with shorter epochs for quick iteration.
+  # LRs match BASE; the only change is duration.
+  phases:
+    - heads:          [binary, multi]
+      nepochs:        100
+      learning_rate:  5.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1]
+      nepochs:        100
+      learning_rate:  5.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff]
+      nepochs:        100
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff, pos]
+      nepochs:        100
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff, pos, vel]
+      nepochs:        100
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff, pos, vel, conc]
+      nepochs:        600
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+wandb:
+  run_name: trial_Mmin1e14
+
+data_settings:
+  n_shards:       4        # one HDF5 shard per GPU (4-GPU trial)
+
+  # halo_hdf5_dir and shard_dir are auto-derived by config_loader from
+  # Mmin_cut_str:
+  #   halo_hdf5_dir = ../data/halos_Mmin1e14
+  #   shard_dir     = ../data/shards_Mmin1e14
+  # The 1e14 string keeps these naturally separate from the full run's
+  # 5e12 directories, so no per-trial subfolder is needed any more.
+  # If you want a same-Mmin sub-trial in its own location, set
+  # `data_root: ../data/some_qualifier` here.
+
+  Mmin_cut:       1.0e14
+  Mmin_cut_str:   '1e14'
+  nMax_h_raw:     6        # halos stored per voxel in per-sim HDF5; ≥ Nmax

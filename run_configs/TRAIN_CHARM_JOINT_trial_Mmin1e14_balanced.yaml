@@ -1,0 +1,82 @@
+# TRAIN_CHARM_JOINT_trial_Mmin1e14_balanced.yaml
+# ----------------------------------------------
+# Trial run @ Mmin = 1e14 with the binary-head class-imbalance fix
+# enabled. At this mass cut the true voxel occupancy fraction is
+# ~0.26% (685 occ / 261459 empty per batch of 64 sub-cubes); an
+# unbalanced per-voxel mean drives the optimizer onto a degenerate
+# plateau where pw_occ stays small for *all* voxels (gap to a
+# perfect discriminator is only ~0.012 in mean NLL).
+#
+# Why subsample (and NOT focal):
+#   Plain focal loss without α-balancing does not actually solve
+#   extreme imbalance — the gradient dynamics push the encoder to
+#   collapse to a near-constant pw_occ ≈ 0.03 across all voxels
+#   (no discrimination at all; max pw_occ ~ 0.6 even on confident
+#   voxels). Subsample (1:1 sub-batch balance) produces a real
+#   ranking with max pw_occ ≈ 1.0 on truly occupied voxels.
+#
+#   The price for subsample is that the trained classifier outputs
+#   p(occ | x, π_train=0.5), so the absolute pw_occ values need a
+#   Bayesian renormalisation to π_true ≈ 3e-4 at inference time.
+#   This is handled by run_inference_v2.py via:
+#       --binary_train_prior 0.5  --binary_target_prior 3.27e-4
+#   (build_model auto-sets binary_train_prior=0.5 for subsample, so
+#   the --binary_train_prior override is only needed when loading a
+#   subsample checkpoint with a config that says otherwise.)
+#
+# Run training:
+#   torchrun --standalone --nproc_per_node=4 \
+#       charm/run_charm_joint_ddp.py \
+#       --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14_balanced.yaml
+#
+# Run inference (with prior correction):
+#   python charm/run_inference_v2.py \
+#       --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14_balanced.yaml \
+#       --sim_id 0 --device cuda --binary_target_prior 3.27e-4
+
+extends: TRAIN_CHARM_JOINT_trial_Mmin1e14.yaml
+
+train_settings:
+  # subsample = exact 1:1 voxel balance (all occupied + equal-size
+  # random empty draw). build_model auto-sets binary_train_prior=0.5
+  # for this mode, so model.sample() will know to apply the Bayesian
+  # correction when --binary_target_prior is passed at inference.
+  binary_loss_mode:    subsample
+  binary_focal_gamma:  2.0     # unused under subsample, kept for completeness
+
+  checkpoint_dir:    ../model_checkpoints/CHARM_JOINT_trial_Mmin1e14_subsample/
+  resume_checkpoint: null
+
+  phases:
+    - heads:          [binary, multi]
+      nepochs:        3000
+      learning_rate:  5.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1]
+      nepochs:        300
+      learning_rate:  5.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff]
+      nepochs:        200
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff, pos]
+      nepochs:        200
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff, pos, vel]
+      nepochs:        200
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff, pos, vel, conc]
+      nepochs:        600
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+wandb:
+  run_name: trial_Mmin1e14_subsample

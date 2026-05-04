@@ -1,9 +1,5 @@
-import sys, os
-import pathlib
-curr_path = pathlib.Path().absolute()
-sys.path.append(str(curr_path))
-
-from .combined_models import *
-from .all_models import *
-from .infer_halos_from_PM import *
-from .utils_data_prep_cosmo_vel import *
+from .all_models_v2 import *
+from .cnn_3d_stack_v2 import *
+from .combined_models_v2 import *
+from .utils_data_prep_v2 import *
+from .utils import *

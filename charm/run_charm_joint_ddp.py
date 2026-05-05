@@ -54,8 +54,10 @@ from config_loader      import load_config
 
 try:
     import wandb
-    _WANDB_AVAILABLE = True
-except ImportError:
+    _WANDB_AVAILABLE = callable(getattr(wandb, 'init', None))
+    _WANDB_SOURCE = getattr(wandb, '__file__', None) or getattr(wandb, '__path__', None)
+except ImportError as e:
+    _WANDB_SOURCE = str(e)
     _WANDB_AVAILABLE = False
 
 
@@ -659,7 +661,11 @@ class TrainProfiler:
 def setup_wandb(cfg: dict, rank: int, world_size: int, run_name: str = None,
                 disabled: bool = False):
     """Initialise W&B on rank 0 only.  Returns wandb run or None."""
-    if rank != 0 or not _WANDB_AVAILABLE or disabled:
+    if rank != 0 or disabled:
+        return None
+    if not _WANDB_AVAILABLE:
+        print(f'W&B disabled: invalid or unavailable wandb import '
+              f'({_WANDB_SOURCE})', flush=True)
         return None
     wc = cfg.get('wandb', {})
     if not wc.get('enabled', False):

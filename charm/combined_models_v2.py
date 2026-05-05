@@ -354,19 +354,25 @@ class CHARM_Model(nn.Module):
 
                     elif self.binary_loss_mode == 'focal':
                         cond_b = self._apply_proj('binary', cond_out[sel])
-                        raw_nll = self.binary_model.forward(x_bin_sel, cond_b)
-                        # Compute mixing weights for focal modulation under
-                        # no_grad — the focal weight is a constant scaling
-                        # factor; gradients flow only through raw_nll.
-                        # This avoids a redundant forward pass through layer_init
-                        # (forward() already called it above).
-                        with torch.no_grad():
-                            out_b = self.binary_model.layer_init(cond_b)
-                            pw    = self.binary_model._mixing_weights(out_b)
+                        # Compute mixing weights WITH gradient tracking.
+                        # We must NOT use raw_nll = binary_model.forward() here
+                        # because the fixed-sigma GMM gives:
+                        #   raw_nll = -log(pw_correct) - log(peak_density)
+                        #           = -log(pw_correct) - 2.077  (for sigma=0.05)
+                        # This offset makes raw_nll NEGATIVE for pw_correct > 12.5%,
+                        # inverting the gradient direction and driving pw_correct
+                        # toward a pathological equilibrium at ~0.33 instead of 1.
+                        # Correct focal loss requires a non-negative base loss:
+                        #   cls_nll = -log(pw_correct)  (standard cross-entropy, ≥ 0)
+                        out_b = self.binary_model.layer_init(cond_b)
+                        pw    = self.binary_model._mixing_weights(out_b)
                         # pw[:, 0] = pw_empty (mu=0); pw[:, 1] = pw_occ (mu=1)
                         p_correct = torch.where(y_bin, pw[:, 1], pw[:, 0])
-                        focal_w = (1.0 - p_correct).pow(self.binary_focal_gamma)
-                        _accum('binary', raw_nll * focal_w)
+                        # Focal weight is a constant multiplier — detach to avoid
+                        # double-counting gradients through the weight itself.
+                        focal_w = (1.0 - p_correct.detach()).pow(self.binary_focal_gamma)
+                        cls_nll = -torch.log(p_correct.clamp(min=1e-8))
+                        _accum('binary', focal_w * cls_nll)
 
                     else:  # 'none' — legacy behaviour
                         cond_b = self._apply_proj('binary', cond_out[sel])

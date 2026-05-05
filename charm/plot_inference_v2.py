@@ -156,16 +156,10 @@ def halo_mass_function(lgM: np.ndarray, lgMmin: float, lgMmax: float,
     return 0.5 * (bins[:-1] + bins[1:]), dn_dlgM
 
 
-def power_spectrum(pos: np.ndarray, weights: np.ndarray,
-                   Ng: int, BoxSize: float, kmax: float = 0.4,
-                   MAS: str = 'TSC'):
-    """
-    Compute P(k) using Pylians with TSC (or other) mass assignment.
-
-    Returns (k [h/Mpc], Pk [(Mpc/h)^3]) truncated to k <= kmax.
-    """
+def _density_field(pos: np.ndarray, weights, Ng: int, BoxSize: float,
+                   MAS: str = 'TSC') -> np.ndarray:
+    """Paint positions to a (Ng,Ng,Ng) overdensity grid, normalised to mean=1."""
     import MAS_library as MASL
-    import Pk_library as PKL
 
     pos32  = np.ascontiguousarray(pos.astype(np.float32))
     Lbox32 = np.float32(BoxSize)
@@ -179,14 +173,57 @@ def power_spectrum(pos: np.ndarray, weights: np.ndarray,
 
     mean = delta.mean(dtype=np.float64)
     if mean <= 0:
-        return np.zeros(1), np.zeros(1)
-    delta = (delta / mean - 1.0).astype(np.float32)
+        return None
+    return (delta / mean - 1.0).astype(np.float32)
 
-    Pk_obj = PKL.Pk(delta, Lbox32, axis=0, MAS=MAS, threads=1, verbose=False)
+
+def power_spectrum(pos: np.ndarray, weights: np.ndarray,
+                   Ng: int, BoxSize: float, kmax: float = 0.4,
+                   MAS: str = 'TSC', axis: int = 0):
+    """
+    Compute P(k) monopole using Pylians with TSC (or other) mass assignment.
+
+    Returns (k [h/Mpc], Pk [(Mpc/h)^3]) truncated to k <= kmax.
+    """
+    import Pk_library as PKL
+
+    delta = _density_field(pos, weights, Ng, BoxSize, MAS)
+    if delta is None:
+        return np.zeros(1), np.zeros(1)
+
+    Pk_obj = PKL.Pk(delta, np.float32(BoxSize), axis=axis, MAS=MAS,
+                    threads=1, verbose=False)
     k = Pk_obj.k3D
     P = Pk_obj.Pk[:, 0]
     sel = (k > 0) & (k <= kmax) & np.isfinite(P) & (P > 0)
     return k[sel], P[sel]
+
+
+def power_spectrum_multipoles(pos: np.ndarray, weights,
+                               Ng: int, BoxSize: float, kmax: float = 0.4,
+                               MAS: str = 'TSC', axis: int = 2):
+    """
+    Compute P0, P2, P4 multipoles using Pylians.
+
+    `axis` must match the line-of-sight direction used when applying RSD.
+    Returns (k, P0, P2, P4) truncated to k <= kmax.
+    P0 > 0; P2 and P4 can be negative.
+    """
+    import Pk_library as PKL
+
+    delta = _density_field(pos, weights, Ng, BoxSize, MAS)
+    if delta is None:
+        z = np.zeros(1)
+        return z, z, z, z
+
+    Pk_obj = PKL.Pk(delta, np.float32(BoxSize), axis=axis, MAS=MAS,
+                    threads=1, verbose=False)
+    k  = Pk_obj.k3D
+    P0 = Pk_obj.Pk[:, 0]
+    P2 = Pk_obj.Pk[:, 1]
+    P4 = Pk_obj.Pk[:, 2]
+    sel = (k > 0) & (k <= kmax) & np.isfinite(P0)
+    return k[sel], P0[sel], P2[sel], P4[sel]
 
 
 def apply_rsd(pos: np.ndarray, vel: np.ndarray,
@@ -329,83 +366,147 @@ def make_all_plots(mock, true_cat, meta, output_dir):
     ax_hr.set_xlabel('$\\log_{10} M$ [$M_\\odot/h$]')
     ax_hr.set_ylabel('mock/true')
 
-    # Real-space Pk (unweighted)
-    ax = fig.add_subplot(gs[1, 1])
+    # Real-space Pk (unweighted) — main panel + ratio subplot
+    sub_rs = gs[1, 1].subgridspec(2, 1, height_ratios=[3, 1], hspace=0.05)
+    ax_rs  = fig.add_subplot(sub_rs[0])
+    ax_rsr = fig.add_subplot(sub_rs[1], sharex=ax_rs)
     k_m, Pk_m = power_spectrum(mock['pos'],     None, Ng, BoxSize, kmax=K_MAX)
     k_t, Pk_t = power_spectrum(true_cat['pos'], None, Ng, BoxSize, kmax=K_MAX)
-    ax.loglog(k_m, Pk_m, '-', color=C_MOCK, lw=1.5, label='Mock')
-    ax.loglog(k_t, Pk_t, '-', color=C_TRUE, lw=1.5, label='True')
-    ax.set_xlabel('$k$ [h/Mpc]'); ax.set_ylabel('$P(k)$ [(Mpc/h)$^3$]')
-    ax.set_title(f'Real-space Pk — TSC {Ng}$^3$ (unweighted)', fontsize=10)
-    ax.legend(fontsize=9)
+    ax_rs.loglog(k_m, Pk_m, '-', color=C_MOCK, lw=1.5, label='Mock')
+    ax_rs.loglog(k_t, Pk_t, '-', color=C_TRUE, lw=1.5, label='True')
+    ax_rs.set_ylabel('$P(k)$ [(Mpc/h)$^3$]')
+    ax_rs.set_title(f'Real-space Pk (unweighted, TSC {Ng}$^3$)', fontsize=10)
+    ax_rs.legend(fontsize=9)
+    plt.setp(ax_rs.get_xticklabels(), visible=False)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        _rs_ratio = np.where(Pk_t > 0, Pk_m / np.interp(k_m, k_t, Pk_t), np.nan)
+    ax_rsr.semilogx(k_m, _rs_ratio, '-', color='k', lw=1.2)
+    ax_rsr.axhline(1.0, ls='--', color='gray', lw=1.0)
+    ax_rsr.fill_between(k_m, 0.9, 1.1, alpha=0.15, color='gray')
+    ax_rsr.set_ylim(0.5, 1.5)
+    ax_rsr.set_xlabel('$k$ [h/Mpc]')
+    ax_rsr.set_ylabel('mock/true')
 
-    # Real-space Pk ratio
-    ax = fig.add_subplot(gs[1, 2])
-    if k_m.size and k_t.size:
-        Pk_ratio = Pk_m / np.interp(k_m, k_t, Pk_t)
-        ax.semilogx(k_m, Pk_ratio, '-', color='k', lw=1.5)
-        ax.axhline(1.0, ls='--', color='gray', lw=1.0)
-        ax.fill_between(k_m, 0.9, 1.1, alpha=0.15, color='gray')
-        ax.set_ylim(0.5, 1.5)
-    ax.set_xlabel('$k$ [h/Mpc]'); ax.set_ylabel('$P_{mock}/P_{true}$')
-    ax.set_title('Real-space Pk ratio', fontsize=10)
-
-    # Mass-weighted Pk
-    ax = fig.add_subplot(gs[1, 3])
+    # Real-space Pk (mass-weighted) — main panel + ratio subplot
     M_mock_lin = 10.0 ** mock['lgM']
     M_true_lin = 10.0 ** true_cat['lgM']
-    k_mw, Pk_mw = power_spectrum(mock['pos'],     M_mock_lin, Ng, BoxSize, kmax=K_MAX)
-    k_tw, Pk_tw = power_spectrum(true_cat['pos'], M_true_lin, Ng, BoxSize, kmax=K_MAX)
-    ax.loglog(k_mw, Pk_mw, '-', color=C_MOCK, lw=1.5, label='Mock')
-    ax.loglog(k_tw, Pk_tw, '-', color=C_TRUE, lw=1.5, label='True')
-    ax.set_xlabel('$k$ [h/Mpc]'); ax.set_ylabel('$P_M(k)$ [(Mpc/h)$^3$]')
-    ax.set_title('Real-space Pk (mass-weighted)', fontsize=10)
+    sub_mw = gs[1, 2].subgridspec(2, 1, height_ratios=[3, 1], hspace=0.05)
+    ax_mw  = fig.add_subplot(sub_mw[0])
+    ax_mwr = fig.add_subplot(sub_mw[1], sharex=ax_mw)
+    k_mw, Pk_mw = power_spectrum(mock['pos'],     M_mock_lin/1e14, Ng, BoxSize, kmax=K_MAX)
+    k_tw, Pk_tw = power_spectrum(true_cat['pos'], M_true_lin/1e14, Ng, BoxSize, kmax=K_MAX)
+    ax_mw.loglog(k_mw, Pk_mw, '-', color=C_MOCK, lw=1.5, label='Mock')
+    ax_mw.loglog(k_tw, Pk_tw, '-', color=C_TRUE, lw=1.5, label='True')
+    ax_mw.set_ylabel('$P_M(k)$ [(Mpc/h)$^3$]')
+    ax_mw.set_title('Real-space Pk (mass-weighted)', fontsize=10)
+    ax_mw.legend(fontsize=9)
+    plt.setp(ax_mw.get_xticklabels(), visible=False)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        _mw_ratio = np.where(Pk_tw > 0, Pk_mw / np.interp(k_mw, k_tw, Pk_tw), np.nan)
+    ax_mwr.semilogx(k_mw, _mw_ratio, '-', color='k', lw=1.2)
+    ax_mwr.axhline(1.0, ls='--', color='gray', lw=1.0)
+    ax_mwr.fill_between(k_mw, 0.9, 1.1, alpha=0.15, color='gray')
+    ax_mwr.set_ylim(0.5, 1.5)
+    ax_mwr.set_xlabel('$k$ [h/Mpc]')
+    ax_mwr.set_ylabel('mock/true')
+
+    # Combined Pk ratio comparison (unweighted + mass-weighted on same axes)
+    ax = fig.add_subplot(gs[1, 3])
+    if k_m.size and k_t.size:
+        ax.semilogx(k_m, _rs_ratio, '-', color='k', lw=1.5, label='Unweighted')
+    if k_mw.size and k_tw.size:
+        ax.semilogx(k_mw, _mw_ratio, '--', color='purple', lw=1.5, label='Mass-weighted')
+    ax.axhline(1.0, ls='--', color='gray', lw=1.0)
+    ax.fill_between(k_m if k_m.size else k_mw, 0.9, 1.1, alpha=0.15, color='gray')
+    ax.set_ylim(0.5, 1.5)
+    ax.set_xlabel('$k$ [h/Mpc]')
+    ax.set_ylabel('$P_{mock}/P_{true}$')
+    ax.set_title('Real-space Pk ratios', fontsize=10)
     ax.legend(fontsize=9)
 
-    # ── Row 2: RSD Pk ─────────────────────────────────────────────────────────
-    pos_rsd_m = apply_rsd(mock['pos'],     mock['vel'],     BoxSize, z, cosmo)
-    pos_rsd_t = apply_rsd(true_cat['pos'], true_cat['vel'], BoxSize, z, cosmo)
+    # ── Row 2: RSD Pk multipoles (P0, P2/P0, P4/P0) ─────────────────────────
+    # RSD applied along z-axis (axis=2); multipoles computed with the same axis
+    # so that the LOS decomposition is consistent.
+    pos_rsd_m = apply_rsd(mock['pos'],     mock['vel'],     BoxSize, z, cosmo, axis=2)
+    pos_rsd_t = apply_rsd(true_cat['pos'], true_cat['vel'], BoxSize, z, cosmo, axis=2)
 
-    ax = fig.add_subplot(gs[2, 0])
-    k_rs_m, Pk_rs_m = power_spectrum(pos_rsd_m, None, Ng, BoxSize, kmax=K_MAX)
-    k_rs_t, Pk_rs_t = power_spectrum(pos_rsd_t, None, Ng, BoxSize, kmax=K_MAX)
-    ax.loglog(k_rs_m, Pk_rs_m, '-', color=C_MOCK, lw=1.5, label='Mock')
-    ax.loglog(k_rs_t, Pk_rs_t, '-', color=C_TRUE, lw=1.5, label='True')
-    ax.set_xlabel('$k$ [h/Mpc]'); ax.set_ylabel('$P^s(k)$ [(Mpc/h)$^3$]')
-    ax.set_title('RSD Pk (unweighted)', fontsize=10)
-    ax.legend(fontsize=9)
+    k_rs_m,  P0_m,  P2_m,  P4_m  = power_spectrum_multipoles(
+        pos_rsd_m, None, Ng, BoxSize, kmax=K_MAX, axis=2)
+    k_rs_t,  P0_t,  P2_t,  P4_t  = power_spectrum_multipoles(
+        pos_rsd_t, None, Ng, BoxSize, kmax=K_MAX, axis=2)
+    k_rs_mw, P0_mw, _, _ = power_spectrum_multipoles(
+        pos_rsd_m, M_mock_lin, Ng, BoxSize, kmax=K_MAX, axis=2)
+    k_rs_tw, P0_tw, _, _ = power_spectrum_multipoles(
+        pos_rsd_t, M_true_lin, Ng, BoxSize, kmax=K_MAX, axis=2)
 
-    # RSD Pk ratio
-    ax = fig.add_subplot(gs[2, 1])
-    if k_rs_m.size and k_rs_t.size:
-        ratio_rsd = Pk_rs_m / np.interp(k_rs_m, k_rs_t, Pk_rs_t)
-        ax.semilogx(k_rs_m, ratio_rsd, '-', color='k', lw=1.5)
-        ax.axhline(1.0, ls='--', color='gray', lw=1.0)
-        ax.fill_between(k_rs_m, 0.9, 1.1, alpha=0.15, color='gray')
-        ax.set_ylim(0.5, 1.5)
-    ax.set_xlabel('$k$ [h/Mpc]'); ax.set_ylabel('$P^s_{mock}/P^s_{true}$')
-    ax.set_title('RSD Pk ratio', fontsize=10)
+    def _multipole_over_monopole(Pell, P0):
+        """Safe dimensionless multipole ratio Pell/P0."""
+        p0_abs = np.abs(P0)
+        floor = 1e-6 * np.nanmax(p0_abs) if np.any(np.isfinite(p0_abs)) else 0.0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.where((p0_abs > floor) & np.isfinite(Pell), Pell / P0, np.nan)
 
-    # RSD mass-weighted Pk
-    ax = fig.add_subplot(gs[2, 2])
-    k_rs_mw, Pk_rs_mw = power_spectrum(pos_rsd_m, M_mock_lin, Ng, BoxSize, kmax=K_MAX)
-    k_rs_tw, Pk_rs_tw = power_spectrum(pos_rsd_t, M_true_lin, Ng, BoxSize, kmax=K_MAX)
-    ax.loglog(k_rs_mw, Pk_rs_mw, '-', color=C_MOCK, lw=1.5, label='Mock')
-    ax.loglog(k_rs_tw, Pk_rs_tw, '-', color=C_TRUE, lw=1.5, label='True')
-    ax.set_xlabel('$k$ [h/Mpc]'); ax.set_ylabel('$P^s_M(k)$')
-    ax.set_title('RSD Pk (mass-weighted)', fontsize=10)
-    ax.legend(fontsize=9)
+    P2oP0_m = _multipole_over_monopole(P2_m, P0_m)
+    P2oP0_t = _multipole_over_monopole(P2_t, P0_t)
+    P4oP0_m = _multipole_over_monopole(P4_m, P0_m)
+    P4oP0_t = _multipole_over_monopole(P4_t, P0_t)
 
-    # RSD mass-weighted ratio
-    ax = fig.add_subplot(gs[2, 3])
-    if k_rs_mw.size and k_rs_tw.size:
-        ratio_rsd_mw = Pk_rs_mw / np.interp(k_rs_mw, k_rs_tw, Pk_rs_tw)
-        ax.semilogx(k_rs_mw, ratio_rsd_mw, '-', color='k', lw=1.5)
-        ax.axhline(1.0, ls='--', color='gray', lw=1.0)
-        ax.fill_between(k_rs_mw, 0.9, 1.1, alpha=0.15, color='gray')
-        ax.set_ylim(0.5, 1.5)
-    ax.set_xlabel('$k$ [h/Mpc]'); ax.set_ylabel('$P^s_{M,mock}/P^s_{M,true}$')
-    ax.set_title('RSD Pk mass-weighted ratio', fontsize=10)
+    def _pk_ratio_safe(Pm, Pt, k_m, k_t):
+        """Element-wise mock/true ratio, NaN where |true| is negligibly small."""
+        Pt_interp = np.interp(k_m, k_t, Pt)
+        scale = np.maximum(np.abs(Pt_interp), 1e-3 * np.abs(Pt).max())
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.where(scale > 0, Pm / Pt_interp, np.nan)
+
+    def _add_ratio_subplot(gs_cell, k_m, k_t, Pm, Pt, title, ylabel,
+                           use_loglog=True):
+        sub = gs_cell.subgridspec(2, 1, height_ratios=[3, 1], hspace=0.05)
+        ax_main = fig.add_subplot(sub[0])
+        ax_rat  = fig.add_subplot(sub[1], sharex=ax_main)
+        if use_loglog:
+            ax_main.loglog(k_m, Pm, '-', color=C_MOCK, lw=1.5, label='Mock')
+            ax_main.loglog(k_t, Pt, '-', color=C_TRUE, lw=1.5, label='True')
+        else:
+            ax_main.semilogx(k_m, Pm, '-', color=C_MOCK, lw=1.5, label='Mock')
+            ax_main.semilogx(k_t, Pt, '-', color=C_TRUE, lw=1.5, label='True')
+            ax_main.axhline(0, ls=':', color='gray', lw=0.8)
+        ax_main.set_ylabel(ylabel)
+        ax_main.set_title(title, fontsize=10)
+        ax_main.legend(fontsize=9)
+        plt.setp(ax_main.get_xticklabels(), visible=False)
+        ratio = _pk_ratio_safe(Pm, Pt, k_m, k_t)
+        ax_rat.semilogx(k_m, ratio, '-', color='k', lw=1.2)
+        ax_rat.axhline(1.0, ls='--', color='gray', lw=1.0)
+        ax_rat.fill_between(k_m, 0.9, 1.1, alpha=0.15, color='gray')
+        ax_rat.set_ylim(0.5, 1.5)
+        ax_rat.set_xlabel('$k$ [h/Mpc]')
+        ax_rat.set_ylabel('mock/true')
+        return ax_main, ax_rat
+
+    _add_ratio_subplot(
+        gs[2, 0], k_rs_m, k_rs_t, P0_m, P0_t,
+        title='RSD $P_0$ — monopole (unweighted)',
+        ylabel='$P_0^s(k)$ [(Mpc/h)$^3$]',
+        use_loglog=True,
+    )
+    _add_ratio_subplot(
+        gs[2, 1], k_rs_m, k_rs_t, P2oP0_m, P2oP0_t,
+        title='RSD $P_2/P_0$ — quadrupole ratio (unweighted)',
+        ylabel='$P_2^s(k) / P_0^s(k)$',
+        use_loglog=False,
+    )
+    _add_ratio_subplot(
+        gs[2, 2], k_rs_m, k_rs_t, P4oP0_m, P4oP0_t,
+        title='RSD $P_4/P_0$ — hexadecapole ratio (unweighted)',
+        ylabel='$P_4^s(k) / P_0^s(k)$',
+        use_loglog=False,
+    )
+    _add_ratio_subplot(
+        gs[2, 3], k_rs_mw, k_rs_tw, P0_mw, P0_tw,
+        title='RSD $P_0$ — monopole (mass-weighted)',
+        ylabel='$P_{M,0}^s(k)$ [(Mpc/h)$^3$]',
+        use_loglog=True,
+    )
 
     # ── Row 3: Velocity PDFs + c-M relation ──────────────────────────────────
     # Use meta vmin/vmax with a small buffer so bins cover training range exactly.

@@ -33,14 +33,21 @@ module load cuda
 module load cudnn
 module load nccl
 source ~/miniconda3/bin/activate ili-sbi
+PYTHON_EXEC=/mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python
 
 cd $REPO
 
 echo "Job $SLURM_JOB_ID  nodes=$SLURM_JOB_NUM_NODES  node=$(hostname)  $(date)"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
+echo "Python: $PYTHON_EXEC"
+"$PYTHON_EXEC" -c "import sys, wandb; print('Python executable:', sys.executable); print('wandb:', getattr(wandb, '__file__', None), 'has_init=', hasattr(wandb, 'init'))"
 
 # Forward any extra CLI args (e.g. --resume, --no_wandb) passed to sbatch
 EXTRA_ARGS="${@}"
+
+export PYTHONPATH=$REPO:${PYTHONPATH:-}
+export WANDB_DIR=$REPO/logs/wandb
+
 
 # Pick a free port on the master node for the rendezvous.
 # MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
@@ -52,7 +59,17 @@ master_node=$SLURMD_NODENAME
 export NCCL_SOCKET_IFNAME=^lo,docker0
 export NCCL_IB_DISABLE=0
 
-srun python `which torchrun` \
+# srun python `which torchrun` \
+#         --nnodes $SLURM_JOB_NUM_NODES \
+#         --nproc_per_node $SLURM_GPUS_PER_NODE \
+#         --rdzv_id $SLURM_JOB_ID \
+#         --rdzv_backend c10d \
+#         --rdzv_endpoint $master_node:29500 \
+#         charm/run_charm_joint_ddp.py \
+#         --config "$CONFIG" \
+#         $EXTRA_ARGS
+
+srun "$PYTHON_EXEC" -m torch.distributed.run \
         --nnodes $SLURM_JOB_NUM_NODES \
         --nproc_per_node $SLURM_GPUS_PER_NODE \
         --rdzv_id $SLURM_JOB_ID \
@@ -61,5 +78,7 @@ srun python `which torchrun` \
         charm/run_charm_joint_ddp.py \
         --config "$CONFIG" \
         $EXTRA_ARGS
+
+
 
 echo "Training finished at $(date)"

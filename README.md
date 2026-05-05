@@ -264,7 +264,7 @@ The `--resume` flag is forwarded to `run_charm_joint_ddp.py`.
 The binary head (empty vs. occupied voxel) supports four loss modes, set via `binary_loss_mode` in the config:
 
 | Mode | Description | When to use |
-|---|---|---|
+| --- | --- | --- |
 | `none` | Standard mean NLL over all voxels (legacy) | Only for high-occupancy runs where class imbalance is negligible |
 | `subsample` | Keep all occupied + equal random draw of empty (1:1 ratio); apply Bayesian prior correction at inference | v1 production run |
 | `alpha` | Per-voxel inverse-frequency weighting, mean-1 normalised | Intermediate occupancy |
@@ -273,6 +273,8 @@ The binary head (empty vs. occupied voxel) supports four loss modes, set via `bi
 **Why focal over subsample:** Subsample trains under an artificial balanced prior (π=0.5) and requires a Bayesian correction factor at inference. This correction fails at extreme cosmologies (very low/high occupancy), causing 20–50% total-count errors. Focal loss uses all voxels under the true class distribution — no correction needed.
 
 **Gamma choice:** `gamma=2.0` is the standard value (Lin et al. 2017). At the degenerate empty-plateau (pw_occ≈π), gamma=2 gives a 66,886:1 occupied:empty gradient ratio, decisively breaking the plateau. The hard/easy suppression curve has a knee at gamma≈1.5–2, making values above 2 give diminishing returns. The gradient balance in the well-trained regime is insensitive to gamma across [1, 3].
+
+**Implementation note — base loss must be `−log(pw_correct)`, not the raw GMM NLL.** The `SumGaussModel` with `sigma=0.05` gives `raw_nll = −log(pw_correct) − 2.077` (the `2.077 = log(peak_density)` offset from the narrow Gaussian). This offset makes `raw_nll` **negative** as soon as `pw_correct > 12.5%`, inverting the focal gradient direction and driving the model to a pathological equilibrium at `pw_correct ≈ 0.33` for *both* occupied and empty voxels, causing 3–6× too many halos at inference. The fix in `combined_models_v2.py` uses `cls_nll = −log(pw_correct)` (standard cross-entropy, always ≥ 0) as the base loss.
 
 ### Post-training: Binary Prior Calibration (v1/subsample only)
 
@@ -315,7 +317,7 @@ train_settings:
 The v1 and v2 phase schedules are identical; only the binary loss mode differs:
 
 | Phase | Active heads | Epochs | Peak LR |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 0 | binary, multi | 300 | 5e-4 |
 | 1 | + m1 | 300 | 5e-4 |
 | 2 | + mdiff | 300 | 2e-4 |
@@ -397,7 +399,7 @@ with torch.no_grad():
 Three pre-trained checkpoints from an earlier separate-model training regime are included in `charm/trained_models/`:
 
 | File | Contents |
-|---|---|
+| --- | --- |
 | `charm_model_massNtot_bestfit_v2.pth` | Occupancy (binary + multi) + mass (M1 + Mdiff) heads |
 | `charm_model_vel_bestfit_v2.pth` | Velocity head |
 | `charm_model_conc_bestfit_v2.pth` | Concentration head |
@@ -434,7 +436,7 @@ The joint model (`run_charm_joint_ddp.py`) supersedes these.
 ## Dependencies
 
 | Package | Purpose |
-|---|---|
+| --- | --- |
 | `torch` | Model training and inference |
 | `numpy`, `scipy` | Numerical operations |
 | `h5py` | HDF5 training data I/O |

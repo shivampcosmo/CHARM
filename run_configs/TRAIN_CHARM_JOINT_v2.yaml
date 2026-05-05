@@ -13,6 +13,16 @@
 #   count errors.  Focal loss uses all voxels under the true class distribution
 #   so pw_occ ≈ P(occ|features, π_true) directly — no correction needed.
 #
+# IMPORTANT — focal loss implementation note (combined_models_v2.py):
+#   The base loss MUST be cls_nll = -log(pw_correct), NOT the raw GMM NLL.
+#   The fixed-sigma GMM (sigma=0.05) gives:
+#     raw_nll = -log(pw_correct) - log(1/(sigma*sqrt(2pi)))
+#             = -log(pw_correct) - 2.077
+#   This constant offset makes raw_nll NEGATIVE for pw_correct > 12.5%,
+#   inverting the gradient direction and driving pw_correct to a pathological
+#   equilibrium at ~0.33 (causes 3-6x too many halos at inference).
+#   The fix: use cls_nll = -log(pw_correct) directly (always >= 0).
+#
 # Usage:
 #   sbatch run_scripts/run_train_full_v2.sh
 #   # or directly:
@@ -59,15 +69,14 @@ train_settings:
   # bias, no Bayesian correction needed at inference.  gamma=2.0 is the
   # standard value from Lin et al. 2017; it strongly down-weights easy
   # (well-classified) voxels and focuses capacity on hard / boundary cases.
-  binary_loss_mode:    focal
-  binary_focal_gamma:  2.0
+  binary_loss_mode:    none
 
   checkpoint_dir:    ../model_checkpoints/CHARM_JOINT_v2/
   resume_checkpoint: null
 
   phases:
     - heads:          [binary, multi]
-      nepochs:        300
+      nepochs:        1000
       learning_rate:  5.0e-4
       warmup_frac:    0.07
 
@@ -92,7 +101,7 @@ train_settings:
       warmup_frac:    0.07
 
     - heads:          [binary, multi, m1, mdiff, pos, vel, conc]
-      nepochs:        4500
+      nepochs:        2500
       learning_rate:  2.0e-4
       warmup_frac:    0.07
 

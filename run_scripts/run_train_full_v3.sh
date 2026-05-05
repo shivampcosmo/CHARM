@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=charm_train_full_v2
+#SBATCH --job-name=charm_train_full_v3
 #SBATCH --nodes=3
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
@@ -8,27 +8,16 @@
 #SBATCH --mem=256G
 #SBATCH --time=24:00:00
 #SBATCH -p gpu
-#SBATCH --output=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v2_%j.out
-#SBATCH --error=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v2_%j.err
+#SBATCH --output=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v3_%j.out
+#SBATCH --error=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v3_%j.err
 
 #
-# Full training run v2: focal loss binary head (no Bayesian prior correction).
-#
-# Resume from checkpoint:
-#   sbatch run_scripts/run_train_full_v2.sh --resume <path/to/checkpoint.pth>
-#   (the --resume arg is forwarded to run_charm_joint_ddp.py)
-#
-# To disable W&B: add --no_wandb below.
-# To use W&B:     set WANDB_API_KEY in your environment or run `wandb login` once.
-#
-# NOTE: no calibrate_binary_prior.py step needed after training — inference
-# with focal loss uses binary_model.inverse() directly without any
-# Bayesian prior correction.
+# Full training run v3: make the staggered learning completely separate with the last phase joining all heads together for 2500 epochs at a lower learning rate. Also add an intermediate phase training only on the concentration head.
 
 set -euo pipefail
 
 REPO=/mnt/ceph/users/spandey/CHARM_v2/CHARM
-CONFIG=$REPO/run_configs/TRAIN_CHARM_JOINT_v2.yaml
+CONFIG=$REPO/run_configs/TRAIN_CHARM_JOINT_v3.yaml
 
 mkdir -p $REPO/logs
 

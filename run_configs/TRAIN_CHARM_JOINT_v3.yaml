@@ -1,7 +1,7 @@
 # TRAIN_CHARM_JOINT.yaml
 # ----------------------
-# Production joint-training run: Mmin = 5×10¹² Msun/h (lgMmin = 12.70),
-# 1800 training sims, 8 GPUs / 8 shards.
+# Production exposure-robust joint-training run: Mmin = 5×10¹² Msun/h
+# (lgMmin = 12.70), 1800 training sims, 8 GPUs / 8 shards.
 #
 # Inherits all defaults from BASE_CONFIG.yaml; the keys below override
 # only what's specific to this run (Mmin-dependent ranges, dataset size,
@@ -9,7 +9,7 @@
 #
 # Usage:
 #   torchrun --standalone --nproc_per_node=8 \
-#       charm/run_charm_joint_ddp.py --config run_configs/TRAIN_CHARM_JOINT.yaml
+#       charm/run_charm_joint_exposure_ddp.py --config run_configs/TRAIN_CHARM_JOINT_v3.yaml
 
 extends: BASE_CONFIG.yaml
 
@@ -55,6 +55,20 @@ train_settings:
   nsims_per_batch:  200    # doubled from 100 after float16→bfloat16 fix frees ~13 GB per rank
 
   binary_loss_mode:    subsample
+  torch_compile:       false
+
+  exposure_bias:
+    enabled: true
+    start_phase: 2
+    student_prob_start: 0.0
+    student_prob_end: 0.7
+    teacher_loss_floor: 0.3
+    sample_repeats: 1
+    detach_student_samples: true
+    use_truth_loss_masks: true
+    rollout_val_every: 10
+    rollout_val_max_outer: 4
+    save_best_rollout: true
 
   checkpoint_dir:    ../model_checkpoints/CHARM_JOINT_v3/
   resume_checkpoint: null

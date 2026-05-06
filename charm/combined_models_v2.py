@@ -255,6 +255,13 @@ class CHARM_Model(nn.Module):
         mask_ntot=None,
         # which heads contribute to the loss
         heads_to_train=frozenset(['binary', 'multi', 'm1', 'mdiff']),
+        # scheduled on-policy conditioning for downstream heads.  When this
+        # is >0, binary/multi stay fully supervised, while m1/mdiff/vel/conc/pos
+        # are trained on a mixture of teacher-forced and sampled-upstream
+        # conditioners.
+        exposure_student_prob: float = 0.0,
+        exposure_sample_repeats: int = 1,
+        binary_target_prior: float = None,
         LOCAL_BIASING: bool = False,
     ) -> dict:
         """
@@ -289,6 +296,112 @@ class CHARM_Model(nn.Module):
             count[name] += L.numel()
         _accum = torch._dynamo.disable(_accum)
 
+        exposure_student_prob = float(exposure_student_prob or 0.0)
+        exposure_student_prob = max(0.0, min(1.0, exposure_student_prob))
+        exposure_sample_repeats = max(1, int(exposure_sample_repeats or 1))
+        exposure_heads = ('m1', 'mdiff', 'vel', 'conc', 'pos')
+
+        def _mask_from_counts(
+            counts: torch.Tensor,
+            ndim: int,
+            vel_style: bool = False,
+        ) -> torch.Tensor:
+            idx = torch.arange(ndim, device=device)
+            mask = (
+                idx.unsqueeze(0)
+                < counts.clamp(min=0).long().unsqueeze(1)
+            ).float()
+            if vel_style:
+                mask = (
+                    mask.unsqueeze(-1)
+                    .expand(-1, -1, 3)
+                    .reshape(mask.shape[0], -1)
+                )
+            return mask
+
+        def _sample_student_chain(cond_out: torch.Tensor,
+                                  x_binary_jb: torch.Tensor) -> dict:
+            """Sample the inference-time upstream chain for one outer batch."""
+            n_vox = cond_out.shape[0]
+
+            cond_b = self._apply_proj('binary', cond_out)
+            if (self.binary_train_prior is not None
+                    and (binary_target_prior is not None
+                         or x_binary_jb is not None)):
+                out_b = self.binary_model.layer_init(cond_b)
+                pw = self.binary_model._mixing_weights(out_b)
+                pw_occ = pw[:, 1].clamp(1e-12, 1.0 - 1e-12)
+                p_tr = float(self.binary_train_prior)
+                if binary_target_prior is None:
+                    p_tg = x_binary_jb[:, 0].float().mean()
+                else:
+                    p_tg = torch.as_tensor(
+                        binary_target_prior, device=device,
+                        dtype=pw_occ.dtype,
+                    )
+                p_tg = p_tg.clamp(1e-6, 1.0 - 1e-6)
+                r = (p_tg / p_tr) * ((1.0 - p_tr) / (1.0 - p_tg))
+                pw_occ = r * pw_occ / (1.0 + (r - 1.0) * pw_occ)
+                occ_mask = torch.bernoulli(pw_occ).float()
+            else:
+                samp_binary = self.binary_model.inverse(cond_b)
+                occ_mask = (samp_binary >= 0.5).float()
+
+            occ_idx = torch.where(occ_mask > 0)[0]
+            ntot = torch.zeros(n_vox, device=device)
+            if occ_idx.numel() > 0:
+                cond_mc = self._apply_proj('multi', cond_out[occ_idx])
+                mc_out = self.multiclass_model.inverse(cond_mc)
+                ntot[occ_idx] = torch.clamp(
+                    torch.round(mc_out), min=1, max=self.ndim
+                )
+
+            occ_gt0 = torch.where(ntot > 0)[0]
+            occ_gt1 = torch.where(ntot > 1)[0]
+
+            m1 = torch.zeros(n_vox, device=device)
+            if occ_gt0.numel() > 0 and self.m1_model is not None:
+                cond_m1 = cond_out
+                if self.cond_nhalos_on_m1:
+                    cond_m1 = torch.cat([ntot.unsqueeze(1), cond_m1], dim=1)
+                cond_m1 = self._apply_proj('m1', cond_m1)
+                mask_m1_s = _mask_from_counts(ntot, 1)
+                m1_s, _ = self.m1_model.inverse(
+                    cond_m1[occ_gt0], mask_m1_s[occ_gt0]
+                )
+                m1[occ_gt0] = m1_s.reshape(-1).clamp(0.0, 1.0)
+
+            mdiff = torch.zeros(n_vox, self.ndim - 1, device=device)
+            if occ_gt1.numel() > 0 and self.mdiff_model is not None:
+                cond_md = cond_out
+                if self.cond_m1_on_mdiff:
+                    cond_md = torch.cat(
+                        [ntot.unsqueeze(1), m1.unsqueeze(1), cond_md], dim=1
+                    )
+                cond_md = self._apply_proj('mdiff', cond_md)
+                mask_md_s = _mask_from_counts(
+                    (ntot - 1).clamp(min=0), self.ndim - 1
+                )
+                mdiff_s, _ = self.mdiff_model.inverse(
+                    cond_md[occ_gt1], mask_md_s[occ_gt1]
+                )
+                mdiff[occ_gt1] = mdiff_s.clamp(0.0, 1.0)
+
+            m_all = torch.zeros(n_vox, self.ndim, device=device)
+            m_all[:, 0] = m1
+            for j in range(1, self.ndim):
+                m_all[:, j] = (m_all[:, j - 1] - mdiff[:, j - 1]).clamp(0.0, 1.0)
+            slot_mask = _mask_from_counts(ntot, self.ndim)
+            m_all = m_all * slot_mask
+
+            return {
+                'ntot': ntot,
+                'm1': m1,
+                'mdiff': mdiff,
+                'mhalos': m_all,
+                'slot_mask': slot_mask,
+            }
+
         for jb in range(nbatches):
             cond_out = self._encode(
                 cond_x[jb], cond_x_nsh[jb],
@@ -300,6 +413,32 @@ class CHARM_Model(nn.Module):
             nhalos_jb = nhalos_truth[jb].to(device)          # (N_vox, 1)
             mask_occ = torch.where(nhalos_jb[:, 0] > 0)[0]   # voxels with ≥1 halo
             mask_gt1 = torch.where(nhalos_jb[:, 0] > 1)[0]   # voxels with ≥2 halos
+            use_exposure = (
+                exposure_student_prob > 0.0
+                and any(h in heads_to_train for h in exposure_heads)
+            )
+            student_chains = None
+            if use_exposure:
+                with torch.no_grad():
+                    student_chains = [
+                        _sample_student_chain(cond_out, x_binary[jb])
+                        for _ in range(exposure_sample_repeats)
+                    ]
+
+            def _mix_student(name: str, teacher_L: torch.Tensor, make_student_L):
+                if student_chains is None:
+                    _accum(name, teacher_L)
+                    return
+                student_vals = [make_student_L(ch) for ch in student_chains]
+                student_L = (
+                    student_vals[0] if len(student_vals) == 1
+                    else torch.stack(student_vals, dim=0).mean(dim=0)
+                )
+                _accum(
+                    name,
+                    (1.0 - exposure_student_prob) * teacher_L
+                    + exposure_student_prob * student_L,
+                )
 
             # ---- binary ------------------------------------------------
             # At low occupancy (e.g. Mmin=1e14, ~0.26%), an unbalanced
@@ -398,8 +537,21 @@ class CHARM_Model(nn.Module):
                 if self.cond_nhalos_on_m1:
                     cond_m1 = torch.cat([nhalos_jb, cond_m1], dim=1)
                 cond_m1 = self._apply_proj('m1', cond_m1[mask_sel_occ])
-                _accum('m1',
-                       -self.m1_model.forward(x_m1[jb][mask_sel_occ], cond_m1))
+                teacher_L = -self.m1_model.forward(
+                    x_m1[jb][mask_sel_occ], cond_m1
+                )
+
+                def _m1_student(ch):
+                    cond_s = cond_out
+                    if self.cond_nhalos_on_m1:
+                        n_cond = ch['ntot'].clamp(min=1.0).unsqueeze(1)
+                        cond_s = torch.cat([n_cond, cond_s], dim=1)
+                    cond_s = self._apply_proj('m1', cond_s[mask_sel_occ])
+                    return -self.m1_model.forward(
+                        x_m1[jb][mask_sel_occ], cond_s
+                    )
+
+                _mix_student('m1', teacher_L, _m1_student)
 
             # ---- Mdiff -------------------------------------------------
             if 'mdiff' in heads_to_train and mask_gt1.numel() > 0:
@@ -409,11 +561,28 @@ class CHARM_Model(nn.Module):
                 if self.cond_m1_on_mdiff:
                     cond_md = torch.cat([nhalos_jb, m1_jb, cond_md], dim=1)
                 cond_md = self._apply_proj('mdiff', cond_md[mask_sel])
-                _accum('mdiff',
-                       -self.mdiff_model.forward(
-                           x_mdiff[jb][mask_sel], cond_md,
-                           mask_mdiff[jb][mask_sel],
-                       ))
+                teacher_L = -self.mdiff_model.forward(
+                    x_mdiff[jb][mask_sel], cond_md,
+                    mask_mdiff[jb][mask_sel],
+                )
+
+                def _mdiff_student(ch):
+                    cond_s = cond_out
+                    if self.cond_m1_on_mdiff:
+                        n_cond = ch['ntot'].clamp(min=2.0).unsqueeze(1)
+                        m1_cond = torch.where(
+                            ch['ntot'].unsqueeze(1) > 0,
+                            ch['m1'].unsqueeze(1),
+                            m1_jb,
+                        )
+                        cond_s = torch.cat([n_cond, m1_cond, cond_s], dim=1)
+                    cond_s = self._apply_proj('mdiff', cond_s[mask_sel])
+                    return -self.mdiff_model.forward(
+                        x_mdiff[jb][mask_sel], cond_s,
+                        mask_mdiff[jb][mask_sel],
+                    )
+
+                _mix_student('mdiff', teacher_L, _mdiff_student)
 
             # ---- vel / conc / pos  (all share the same conditioning) ----
             if any(h in heads_to_train for h in ('vel', 'conc', 'pos')) \
@@ -423,25 +592,58 @@ class CHARM_Model(nn.Module):
                 sel = mask_occ
 
                 if 'vel' in heads_to_train:
-                    _accum('vel',
-                           -self.vel_model.forward(
-                               x_vel[jb][sel], cond_prop[sel],
-                               mask_vel[jb][sel],
-                           ))
+                    teacher_L = -self.vel_model.forward(
+                        x_vel[jb][sel], cond_prop[sel],
+                        mask_vel[jb][sel],
+                    )
+
+                    def _vel_student(ch):
+                        m_cond = torch.where(
+                            ch['slot_mask'] > 0, ch['mhalos'], mhalos_jb
+                        )
+                        cond_s = torch.cat([m_cond, cond_out], dim=1)
+                        return -self.vel_model.forward(
+                            x_vel[jb][sel], cond_s[sel],
+                            mask_vel[jb][sel],
+                        )
+
+                    _mix_student('vel', teacher_L, _vel_student)
 
                 if 'conc' in heads_to_train:
-                    _accum('conc',
-                           -self.conc_model.forward(
-                               x_conc[jb][sel], cond_prop[sel],
-                               mask_conc[jb][sel],
-                           ))
+                    teacher_L = -self.conc_model.forward(
+                        x_conc[jb][sel], cond_prop[sel],
+                        mask_conc[jb][sel],
+                    )
+
+                    def _conc_student(ch):
+                        m_cond = torch.where(
+                            ch['slot_mask'] > 0, ch['mhalos'], mhalos_jb
+                        )
+                        cond_s = torch.cat([m_cond, cond_out], dim=1)
+                        return -self.conc_model.forward(
+                            x_conc[jb][sel], cond_s[sel],
+                            mask_conc[jb][sel],
+                        )
+
+                    _mix_student('conc', teacher_L, _conc_student)
 
                 if 'pos' in heads_to_train:
-                    _accum('pos',
-                           -self.pos_model.forward(
-                               x_pos[jb][sel], cond_prop[sel],
-                               mask_pos[jb][sel],
-                           ))
+                    teacher_L = -self.pos_model.forward(
+                        x_pos[jb][sel], cond_prop[sel],
+                        mask_pos[jb][sel],
+                    )
+
+                    def _pos_student(ch):
+                        m_cond = torch.where(
+                            ch['slot_mask'] > 0, ch['mhalos'], mhalos_jb
+                        )
+                        cond_s = torch.cat([m_cond, cond_out], dim=1)
+                        return -self.pos_model.forward(
+                            x_pos[jb][sel], cond_s[sel],
+                            mask_pos[jb][sel],
+                        )
+
+                    _mix_student('pos', teacher_L, _pos_student)
 
         # Finalise: per-voxel mean per head. If a head was active in
         # heads_to_train but its mask was empty in every batch (count == 0),

@@ -235,6 +235,27 @@ Single **DDP training script** for all heads jointly.
 
 ---
 
+#### `charm/run_charm_joint_exposure_ddp.py`
+
+Exposure-robust variant of the joint DDP trainer. It reuses the original
+model, optimizer, shard loading, checkpointing, and teacher-forced validation,
+but enables scheduled sampled-upstream conditioning for downstream halo
+property heads.
+
+Key behaviour:
+
+- Binary and multiclass count heads remain trained with supervised labels.
+- M1/Mdiff/velocity/concentration/position losses can be mixed as
+  `(1 - p_student) * teacher_forced + p_student * sampled_conditioned`.
+- Student samples are detached and generated under the same binary prior
+  correction path used by inference when `binary_train_prior` is set.
+- Rollout validation samples a small validation slice and logs occupied-count,
+  total-count, Ntot-PDF, normalized-HMF, bounds, NaN, and mass-monotonicity
+  diagnostics.
+- Saves `checkpoint_best_teacher.pth` and `checkpoint_best_rollout.pth`.
+
+---
+
 #### `charm/calibrate_binary_prior.py`
 
 **New.** Fits a tiny analytical regressor mapping cosmological parameters to expected total halo count, for use at inference time to auto-estimate `π_target`.
@@ -833,3 +854,150 @@ Run inference on a held-out set of test simulations (not used in training) both 
 - **(e) Per-head NLL on test set** — if scheduled sampling is working, per-head test NLL should be comparable to or better than the teacher-forced baseline, because the heads have been trained on a distribution closer to their inference-time input distribution.
 
 A reduction in the *systematic* component of the offset (i.e. a consistent shift of the mock statistics toward truth across many test cosmologies, not just reduced scatter) would confirm that scheduled sampling is addressing the exposure bias rather than merely adding noise.
+
+
+# Exposure-Robust CHARM Training Script
+
+## Summary
+
+The current trainer is teacher-forced for downstream halo properties. In `CHARM_Model.forward`, M1 conditions on true `Nhalos`, Mdiff conditions on true `Nhalos + M1`, and velocity/concentration/position condition on true full masses. In `CHARM_Model.sample`, those same heads condition on sampled counts and sampled masses. Validation is also teacher-forced, so it can miss inference-time error accumulation.
+
+This is not a mathematical bug if every conditional is perfect, but it is a real finite-model/training mismatch. The new trainer should add scheduled on-policy conditioning while preserving supervised likelihood training.
+
+Also: a 10x excess halo count is primarily a binary/count calibration problem, not downstream exposure bias. The new script must include rollout validation and count calibration diagnostics so exposure training does not hide a broken occupancy model.
+
+## Key Changes
+
+Create a new script:
+
+`charm/run_charm_joint_exposure_ddp.py`
+
+It will reuse the existing model construction, DDP setup, optimizer, checkpointing, and data loading from `run_charm_joint_ddp.py`, but replace the training forward path with an exposure-aware loss helper.
+
+Add config keys under `train_settings.exposure_bias`:
+
+```yaml
+exposure_bias:
+  enabled: true
+  start_phase: 2
+  student_prob_start: 0.0
+  student_prob_end: 0.7
+  teacher_loss_floor: 0.3
+  sample_repeats: 1
+  detach_student_samples: true
+  use_truth_loss_masks: true
+  rollout_val_every: 10
+  rollout_val_max_outer: 4
+  save_best_rollout: true
+```
+
+Training loss per downstream head becomes:
+
+```text
+L_head = (1 - p_student) * L_teacher_forced
+       + p_student * L_student_conditioned
+```
+
+with `p_student` ramped by phase/step and capped at `0.7`. Counts remain supervised directly.
+
+## Exposure-Aware Training Logic
+
+For each outer batch `jb`:
+
+1. Encode `cond_out` once.
+
+2. Train binary and multiclass normally with supervised labels. Do not let downstream exposure loss backprop through hard sampled counts.
+
+3. Under `torch.no_grad()`, sample the current model’s upstream chain:
+   - binary occupancy
+   - multiclass `Nhalos` for sampled occupied voxels
+   - M1 from sampled counts
+   - Mdiff from sampled counts and sampled M1
+   - reconstruct sampled full masses exactly as inference does
+
+4. Compute teacher-forced losses exactly as today.
+
+5. Compute student-conditioned losses using true targets but sampled upstream conditioners:
+   - M1 loss uses true occupied voxels, with `N_cond = max(sampled_N, 1)`.
+   - Mdiff loss uses true `N > 1` voxels, with `N_cond = max(sampled_N, 2)` and sampled M1 where available.
+   - velocity/concentration/position losses use true occupied voxels and true slot masks, but condition on sampled masses for slots that exist in the sampled chain; missing sampled slots fall back to true masses.
+   - false-positive sampled occupied voxels are not given property losses because there are no true halo labels there. Binary/count losses remain responsible for suppressing them.
+
+6. Aggregate the mixed per-head loss before Kendall weighting, so existing multi-task weighting still sees the same head names.
+
+## Important Edge Cases
+
+- If a batch has no occupied voxels for a head, return zero loss as the current code does.
+- If sampled count is lower than the true count, never train a downstream head with an invalid conditioner like `N=0` for M1 or `N=1` for Mdiff.
+- If sampled count is higher than truth, loss masks stay based on true halo slots, so nonexistent halos do not create fake supervised targets.
+- Clamp sampled normalized masses to `[0, 1]` before using them as conditioners, matching inference reconstruction.
+- Keep `student_sample_repeats: 1` by default. More repeats are expensive and should be validation-only unless variance is clearly a problem.
+- If `binary_loss_mode` is `subsample` or `alpha`, student occupancy samples must use the same prior correction that inference uses. Otherwise the exposure trainer will train on an artificial `π_train=0.5` rollout distribution.
+- Default `torch_compile: false` for the exposure script until the dynamic sampling path is verified.
+
+## Validation
+
+Keep the existing teacher-forced validation, but do not use it as the only model selector.
+
+Add rollout validation on rank 0:
+
+1. Full free-running sample on a small fixed validation slice.
+2. Oracle ablations:
+   - truth binary/count, sampled masses/properties
+   - sampled count, truth masses/properties
+   - sampled masses, sampled properties
+3. Metrics:
+   - occupied voxel count ratio
+   - total halo count ratio
+   - per-voxel `Ntot` PDF ratio
+   - normalized HMF ratio from sampled masses
+   - mass monotonicity violation rate
+   - NaN/Inf rate
+   - property bound clipping rate
+
+Save:
+- `checkpoint_best_teacher.pth` by teacher-forced validation loss
+- `checkpoint_best_rollout.pth` by rollout score
+
+Default rollout score:
+
+```text
+score =
+  |log(Nocc_mock / Nocc_true)|
++ |log(Nhalo_mock / Nhalo_true)|
++ mean_abs_log_HMF_ratio
++ 0.25 * mean_abs_log_Ntot_pdf_ratio
+```
+
+## Training Schedule
+
+Recommended fresh run:
+
+1. Phase 0: train `[binary, multi]`, teacher-forced only.
+2. Phase 1: train `[m1]`, teacher-forced only.
+3. Phase 2: train `[mdiff]`, ramp `p_student` from `0.0` to `0.25`.
+4. Phase 3: train `[pos]`, ramp `p_student` to `0.4`.
+5. Phase 4: train `[vel]`, ramp `p_student` to `0.5`.
+6. Phase 5: train `[conc]`, ramp `p_student` to `0.5`.
+7. Final phase: train all heads with low LR, ramp `p_student` to `0.7`, keep `teacher_loss_floor = 0.3`.
+
+For an existing good teacher-forced checkpoint, start directly at the exposure fine-tune phase with LR `5e-5` to `1e-4`.
+
+## Acceptance Criteria
+
+The new trainer is successful only if rollout validation improves, not merely teacher-forced NLL.
+
+Required checks:
+
+- Teacher-forced validation does not regress catastrophically.
+- Free-running occupied voxel count and total halo count are within the target tolerance.
+- HMF ratio improves relative to the current teacher-forced checkpoint.
+- Oracle ablations identify whether remaining error is from count sampling, mass sampling, or property sampling.
+- Inference with `run_inference_v2.py` requires no special new flags beyond any existing binary prior calibration settings.
+
+## Assumptions
+
+- We keep the existing CHARM model architecture and inference script.
+- Student samples are detached; this is scheduled denoising / DAgger-style training, not REINFORCE or differentiable discrete sampling.
+- The count model must be calibrated separately. Exposure-bias training cannot fix a binary head that samples 10x too many occupied voxels.
+- The first implementation should prioritize stable rollout accuracy over fully end-to-end differentiable catalog statistics.

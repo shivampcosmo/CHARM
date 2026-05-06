@@ -8,11 +8,13 @@
 #SBATCH --mem=256G
 #SBATCH --time=24:00:00
 #SBATCH -p gpu
-#SBATCH --output=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v4_%j.out
-#SBATCH --error=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v4_%j.err
+#SBATCH --output=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v3_%j.out
+#SBATCH --error=/mnt/ceph/users/spandey/CHARM_v2/CHARM/logs/train_full_v3_%j.err
 
 #
-# Full training run v4: same as v3 but with none for binary loss.
+# Full training run v3: exposure-robust staggered training.  The early phases
+# train count and property heads separately, then the final phase joins all
+# heads with scheduled sampled-upstream conditioning.
 
 set -euo pipefail
 
@@ -53,7 +55,7 @@ srun "$PYTHON_EXEC" -m torch.distributed.run \
         --rdzv_id $SLURM_JOB_ID \
         --rdzv_backend c10d \
         --rdzv_endpoint $master_node:29500 \
-        charm/run_charm_joint_ddp.py \
+        charm/run_charm_joint_exposure_ddp.py \
         --config "$CONFIG" \
         $EXTRA_ARGS
 

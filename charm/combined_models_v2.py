@@ -35,7 +35,7 @@ class CHARM_Model(nn.Module):
     vel_model         : per-halo 3D velocity  (NLL flow, ndim = 3*max_halos)
     conc_model        : per-halo concentration (NLL flow, ndim = max_halos)
     pos_model         : per-halo 3D sub-voxel position offset (NLL flow,
-                        ndim = 3*max_halos), conditioned on Mhalos like vel.
+                        ndim = 3*max_halos), conditioned on Mhalos like conc.
 
     Conditioning
     ------------
@@ -43,6 +43,8 @@ class CHARM_Model(nn.Module):
     combined models:
       cond_nhalos_on_m1   — prepend Nhalos to M1 conditioning
       cond_m1_on_mdiff    — prepend [Nhalos, M1] to Mdiff conditioning
+      cond_pos_on_vel      — prepend sub-voxel positions to velocity
+                              conditioning, after masses
 
     Cosmology routing (use_film):
       False (default) — encoder receives DM field only; cosmo vector is
@@ -62,7 +64,7 @@ class CHARM_Model(nn.Module):
     ndim : int
         Maximum halos modelled per voxel.  Vel and pos heads use ndim*3
         outputs; conc uses ndim; M1 uses 1; Mdiff uses ndim-1.
-    cond_nhalos_on_m1, cond_m1_on_mdiff : bool
+    cond_nhalos_on_m1, cond_m1_on_mdiff, cond_pos_on_vel : bool
         See above.
     use_film : bool
         See above.
@@ -89,6 +91,7 @@ class CHARM_Model(nn.Module):
         # conditioning flags
         cond_nhalos_on_m1: bool = True,
         cond_m1_on_mdiff: bool = True,
+        cond_pos_on_vel: bool = False,
         # cosmology routing
         use_film: bool = False,
         concat_cosmo_after_film: bool = False,
@@ -119,6 +122,7 @@ class CHARM_Model(nn.Module):
         self.ndim = ndim
         self.cond_nhalos_on_m1 = cond_nhalos_on_m1
         self.cond_m1_on_mdiff = cond_m1_on_mdiff
+        self.cond_pos_on_vel = cond_pos_on_vel
         self.use_film = use_film
         self.concat_cosmo_after_film = concat_cosmo_after_film
         self.priors_all = priors_all
@@ -222,6 +226,30 @@ class CHARM_Model(nn.Module):
             return self.proj_layers[name](x)
         return x
 
+    def _build_mass_prop_cond(
+        self,
+        mhalos_cond: torch.Tensor,
+        cond_out: torch.Tensor,
+    ) -> torch.Tensor:
+        """Conditioning shared by position and concentration heads."""
+        return torch.cat([mhalos_cond, cond_out], dim=1)
+
+    def _build_vel_cond(
+        self,
+        mhalos_cond: torch.Tensor,
+        cond_out: torch.Tensor,
+        pos_cond: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """Velocity conditioning, optionally including sub-voxel positions."""
+        if self.cond_pos_on_vel:
+            if pos_cond is None:
+                raise ValueError(
+                    'cond_pos_on_vel=True requires sub-voxel position '
+                    'conditioning for the velocity head.'
+                )
+            return torch.cat([mhalos_cond, pos_cond, cond_out], dim=1)
+        return self._build_mass_prop_cond(mhalos_cond, cond_out)
+
     # ------------------------------------------------------------------
     # Forward (training)
     # ------------------------------------------------------------------
@@ -320,7 +348,8 @@ class CHARM_Model(nn.Module):
             return mask
 
         def _sample_student_chain(cond_out: torch.Tensor,
-                                  x_binary_jb: torch.Tensor) -> dict:
+                                  x_binary_jb: torch.Tensor,
+                                  sample_pos_for_vel: bool = False) -> dict:
             """Sample the inference-time upstream chain for one outer batch."""
             n_vox = cond_out.shape[0]
 
@@ -394,12 +423,31 @@ class CHARM_Model(nn.Module):
             slot_mask = _mask_from_counts(ntot, self.ndim)
             m_all = m_all * slot_mask
 
+            pos = None
+            if sample_pos_for_vel:
+                if self.pos_model is None:
+                    raise ValueError(
+                        'cond_pos_on_vel=True needs a position head to sample '
+                        'velocity conditioners during exposure training.'
+                    )
+                pos = torch.zeros(n_vox, self.ndim * 3, device=device)
+                if occ_gt0.numel() > 0:
+                    cond_pos = self._build_mass_prop_cond(m_all, cond_out)
+                    mask_pos_s = _mask_from_counts(
+                        ntot, self.ndim, vel_style=True
+                    )
+                    pos_s, _ = self.pos_model.inverse(
+                        cond_pos[occ_gt0], mask_pos_s[occ_gt0]
+                    )
+                    pos[occ_gt0] = pos_s.clamp(-0.5, 0.5)
+
             return {
                 'ntot': ntot,
                 'm1': m1,
                 'mdiff': mdiff,
                 'mhalos': m_all,
                 'slot_mask': slot_mask,
+                'pos': pos,
             }
 
         for jb in range(nbatches):
@@ -420,8 +468,13 @@ class CHARM_Model(nn.Module):
             student_chains = None
             if use_exposure:
                 with torch.no_grad():
+                    sample_pos_for_vel = (
+                        self.cond_pos_on_vel and 'vel' in heads_to_train
+                    )
                     student_chains = [
-                        _sample_student_chain(cond_out, x_binary[jb])
+                        _sample_student_chain(
+                            cond_out, x_binary[jb], sample_pos_for_vel
+                        )
                         for _ in range(exposure_sample_repeats)
                     ]
 
@@ -588,12 +641,26 @@ class CHARM_Model(nn.Module):
             if any(h in heads_to_train for h in ('vel', 'conc', 'pos')) \
                     and mask_occ.numel() > 0:
                 mhalos_jb = mhalos_truth[jb].to(device)
-                cond_prop = torch.cat([mhalos_jb, cond_out], dim=1)
+                cond_prop = self._build_mass_prop_cond(mhalos_jb, cond_out)
                 sel = mask_occ
 
                 if 'vel' in heads_to_train:
+                    if self.cond_pos_on_vel:
+                        if x_pos is None or mask_pos is None:
+                            raise ValueError(
+                                'cond_pos_on_vel=True requires x_pos and '
+                                'mask_pos when training the velocity head.'
+                            )
+                        pos_jb = x_pos[jb].to(device) * mask_pos[jb].to(device)
+                        cond_vel = self._build_vel_cond(
+                            mhalos_jb, cond_out, pos_jb
+                        )
+                    else:
+                        pos_jb = None
+                        cond_vel = cond_prop
+
                     teacher_L = -self.vel_model.forward(
-                        x_vel[jb][sel], cond_prop[sel],
+                        x_vel[jb][sel], cond_vel[sel],
                         mask_vel[jb][sel],
                     )
 
@@ -601,7 +668,17 @@ class CHARM_Model(nn.Module):
                         m_cond = torch.where(
                             ch['slot_mask'] > 0, ch['mhalos'], mhalos_jb
                         )
-                        cond_s = torch.cat([m_cond, cond_out], dim=1)
+                        if self.cond_pos_on_vel:
+                            pos_cond = ch.get('pos')
+                            if pos_cond is None:
+                                pos_cond = pos_jb
+                            cond_s = self._build_vel_cond(
+                                m_cond, cond_out, pos_cond
+                            )
+                        else:
+                            cond_s = self._build_mass_prop_cond(
+                                m_cond, cond_out
+                            )
                         return -self.vel_model.forward(
                             x_vel[jb][sel], cond_s[sel],
                             mask_vel[jb][sel],
@@ -619,7 +696,7 @@ class CHARM_Model(nn.Module):
                         m_cond = torch.where(
                             ch['slot_mask'] > 0, ch['mhalos'], mhalos_jb
                         )
-                        cond_s = torch.cat([m_cond, cond_out], dim=1)
+                        cond_s = self._build_mass_prop_cond(m_cond, cond_out)
                         return -self.conc_model.forward(
                             x_conc[jb][sel], cond_s[sel],
                             mask_conc[jb][sel],
@@ -637,7 +714,7 @@ class CHARM_Model(nn.Module):
                         m_cond = torch.where(
                             ch['slot_mask'] > 0, ch['mhalos'], mhalos_jb
                         )
-                        cond_s = torch.cat([m_cond, cond_out], dim=1)
+                        cond_s = self._build_mass_prop_cond(m_cond, cond_out)
                         return -self.pos_model.forward(
                             x_pos[jb][sel], cond_s[sel],
                             mask_pos[jb][sel],
@@ -670,6 +747,7 @@ class CHARM_Model(nn.Module):
         nhalos_truth=None,
         m1_truth=None,
         mhalos_truth=None,
+        pos_truth=None,
         # truth values used when the corresponding head is not sampled
         mdiff_truth=None,
         # which heads to run; False → substitute truth
@@ -827,7 +905,44 @@ class CHARM_Model(nn.Module):
                 halo_slot_mask = self._build_halo_mask(ntot_np, self.ndim, device=device)
                 mhalos_cond = m_all * halo_slot_mask
 
-            cond_prop = torch.cat([mhalos_cond, cond_out], dim=1)
+            cond_prop = self._build_mass_prop_cond(mhalos_cond, cond_out)
+
+            def _sample_or_get_pos(require_for_vel: bool = False):
+                pos_all = torch.zeros(n_vox, self.ndim * 3, device=device)
+                if sample_pos and self.pos_model is not None:
+                    mask_pos_samp = self._build_halo_mask(
+                        ntot_np, self.ndim, vel_style=True, device=device
+                    )
+                    if occ_gt0.numel() > 0:
+                        pos_samp, _ = self.pos_model.inverse(
+                            cond_prop[occ_gt0], mask_pos_samp[occ_gt0]
+                        )
+                        pos_all[occ_gt0] = pos_samp.clamp(-0.5, 0.5)
+                elif not sample_pos and pos_truth is not None:
+                    mask_pos_samp = self._build_halo_mask(
+                        ntot_np, self.ndim, vel_style=True, device=device
+                    )
+                    pos_all = pos_truth[jb].to(device) * mask_pos_samp
+                elif require_for_vel:
+                    raise ValueError(
+                        'cond_pos_on_vel=True requires sampled positions or '
+                        'pos_truth when sampling velocities.'
+                    )
+                return pos_all
+
+            # If the velocity head is position-conditioned, positions are an
+            # upstream sampled quantity and must be available before velocity.
+            if self.cond_pos_on_vel:
+                pos_samp_all = _sample_or_get_pos(
+                    require_for_vel=sample_vel and self.vel_model is not None
+                )
+                out['pos'].append(pos_samp_all.cpu())
+                cond_vel = self._build_vel_cond(
+                    mhalos_cond, cond_out, pos_samp_all
+                )
+            else:
+                pos_samp_all = None
+                cond_vel = cond_prop
 
             # ---- vel ---------------------------------------------------
             vel_samp_all = torch.zeros(n_vox, self.ndim * 3, device=device)
@@ -837,7 +952,7 @@ class CHARM_Model(nn.Module):
                 )
                 if occ_gt0.numel() > 0:
                     vel_samp, _ = self.vel_model.inverse(
-                        cond_prop[occ_gt0], mask_vel_samp[occ_gt0]
+                        cond_vel[occ_gt0], mask_vel_samp[occ_gt0]
                     )
                     vel_samp_all[occ_gt0] = vel_samp
             out['vel'].append(vel_samp_all.cpu())
@@ -856,16 +971,8 @@ class CHARM_Model(nn.Module):
             out['conc'].append(conc_samp_all.cpu())
 
             # ---- pos ---------------------------------------------------
-            pos_samp_all = torch.zeros(n_vox, self.ndim * 3, device=device)
-            if sample_pos and self.pos_model is not None:
-                mask_pos_samp = self._build_halo_mask(
-                    ntot_np, self.ndim, vel_style=True, device=device
-                )
-                if occ_gt0.numel() > 0:
-                    pos_samp, _ = self.pos_model.inverse(
-                        cond_prop[occ_gt0], mask_pos_samp[occ_gt0]
-                    )
-                    pos_samp_all[occ_gt0] = pos_samp
-            out['pos'].append(pos_samp_all.cpu())
+            if not self.cond_pos_on_vel:
+                pos_samp_all = _sample_or_get_pos(require_for_vel=False)
+                out['pos'].append(pos_samp_all.cpu())
 
         return out

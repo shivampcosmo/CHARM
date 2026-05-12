@@ -1,0 +1,89 @@
+# TRAIN_CHARM_JOINT_v2vel.yaml
+# -------------------------
+# Same training setup as v2, but velocity additionally conditions on sampled
+# sub-voxel positions.  The v2vel trainer warm-starts all compatible weights
+# from the v2 best checkpoint and leaves vel_model.* freshly initialised.
+
+#
+# Usage:
+#   sbatch run_scripts/run_train_full_v2vel.sh
+#   # or directly:
+#   torchrun --standalone --nproc_per_node=8 \
+#       charm/run_charm_joint_v2vel_ddp.py --config run_configs/TRAIN_CHARM_JOINT_v2vel.yaml
+
+extends: BASE_CONFIG.yaml
+
+network_settings:
+  # Larger encoder + heads for the full run (BASE has smaller ones for the trial)
+  K_Mdiff:                       8
+  B_Mdiff:                       [[0, 0.85], [0, 0.55], [0, 0.45], [0, 0.35],
+                                   [0, 0.25], [0, 0.15], [0, 0.10], [0, 0.05]]
+  nflows_Mdiff:                  2
+  base_dist_Mdiff:               gumbel
+  add_Ntot_M1_cond_for_Mdiff:    true
+
+  add_pos_cond_for_vel: true
+
+  # CRITICAL: must match sim_settings.Nmax — one Gaussian component per
+  # allowed count [1 … Nmax].
+  ngauss_Nhalos:                 8
+
+sim_settings:
+  # Dataset split (200 sims held out: 100 val + 100 test)
+  nsims_train:  1800       # sims 0–1799  (training)
+  nsims_val:    100        # sims 1800–1899 (validation)
+  nsims_test:   100        # sims 1900–1999 (never touched)
+  nsims:        1800       # kept for backward compatibility
+
+  # Mass cut and physical ranges for normalisation
+  lgMmin:  12.6989           # log10(5e12) — matches Mmin_cut in halo processing
+  lgMmax:  15.70
+  vmin:   -1350.
+  vmax:    1350.
+  cmin:    1.
+  cmax:    15.
+
+  # Halo catalogue
+  Nmax:              8
+
+train_settings:
+  nsims_per_batch:  200
+
+  # Focal loss: trains under the true class distribution — no π_train=0.5
+  # bias, no Bayesian correction needed at inference.  gamma=2.0 is the
+  # standard value from Lin et al. 2017; it strongly down-weights easy
+  # (well-classified) voxels and focuses capacity on hard / boundary cases.
+  binary_loss_mode:    none
+
+  # One-time warm start for fresh v2vel runs.  If
+  # ../model_checkpoints/CHARM_JOINT_v2vel/charm_joint_resume.pth exists or
+  # --resume is passed, the trainer resumes normally and skips this partial init.
+  init_from_checkpoint: ../model_checkpoints/CHARM_JOINT_v2/charm_joint_best_val.pth
+  init_exclude_prefixes: [vel_model.]
+
+  checkpoint_dir:    ../model_checkpoints/CHARM_JOINT_v2vel/
+  resume_checkpoint: null
+
+  phases:
+    # - heads:          [binary, multi, m1, mdiff, pos, vel]
+    #   nepochs:        500
+    #   learning_rate:  2.0e-4
+    #   warmup_frac:    0.07
+
+    - heads:          [binary, multi, m1, mdiff, pos, vel, conc]
+      nepochs:        2500
+      learning_rate:  2.0e-4
+      warmup_frac:    0.07
+
+  verbose: false
+
+wandb:
+  run_name: full_v2vel
+  watch_log_freq: 0
+
+data_settings:
+  n_shards:       12
+
+  Mmin_cut:       5.0e12
+  Mmin_cut_str:   '5e12'
+  nMax_h_raw:     12

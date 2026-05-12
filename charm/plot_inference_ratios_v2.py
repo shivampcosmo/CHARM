@@ -5,7 +5,9 @@ Aggregate mock/true ratio diagnostics over many CHARM inference catalogs.
 This is intentionally separate from plot_inference_v2.py. It reuses that
 script's catalog loading and statistic helpers, then makes one summary figure:
 gray curves for individual simulations, black mean curve, gray 16th-84th
-percentile band, and reference lines at 1.0 and +/-10%.
+percentile band, and reference lines at 1.0 and +/-10%.  It also writes
+cosmology-coloured variants where each simulation curve is coloured by
+Omega_m or sigma_8.
 """
 
 from __future__ import annotations
@@ -33,6 +35,9 @@ from plot_inference_v2 import (
     power_spectrum,
     power_spectrum_multipoles,
 )
+
+
+CACHE_VERSION = 3
 
 
 STAT_SPECS = OrderedDict([
@@ -66,10 +71,10 @@ STAT_SPECS = OrderedDict([
         'ylabel': 'mock / true',
         'xscale': 'log',
     }),
-    ('rsd_p2p0', {
-        'title': r'RSD quadrupole ratio $P_2/P_0$',
+    ('rsd_p2', {
+        'title': r'RSD quadrupole $P_2$',
         'xlabel': r'$k$ [$h/{\rm Mpc}$]',
-        'ylabel': 'mock / true',
+        'ylabel': r'$P_{2,\rm mock}/P_{2,\rm true}$',
         'xscale': 'log',
     }),
     ('rsd_p4p0', {
@@ -152,7 +157,7 @@ def parse_args():
                    help='Number of simulations to process concurrently.')
     p.add_argument('--ng', type=int, default=384,
                    help='Grid size for Pylians P(k), matching plot_inference_v2.py.')
-    p.add_argument('--kmax', type=float, default=0.4,
+    p.add_argument('--kmax', type=float, default=0.5,
                    help='Maximum k for P(k) curves.')
     p.add_argument('--z_snap', default=None,
                    help='Redshift string in true HDF5 filename. Defaults to config.')
@@ -175,10 +180,11 @@ def default_sim_ids(cfg: dict, sim_start: int | None, sim_end: int | None) -> li
     return list(range(sim_start, sim_end))
 
 
-def resolve_paths(cfg: dict, args):
-    def repo_path(path: str) -> str:
-        return path if os.path.isabs(path) else os.path.join(_REPO_ROOT, path)
+def repo_path(path: str) -> str:
+    return path if os.path.isabs(path) else os.path.join(_REPO_ROOT, path)
 
+
+def resolve_paths(cfg: dict, args):
     ckpt_dir = os.path.join(_REPO_ROOT, cfg['train_settings']['checkpoint_dir'])
     mock_dir = os.path.abspath(args.mock_dir or os.path.join(ckpt_dir, 'inference'))
     true_halo_dir = os.path.abspath(repo_path(
@@ -186,6 +192,25 @@ def resolve_paths(cfg: dict, args):
     output_dir = os.path.abspath(args.output_dir or mock_dir)
     cache_dir = os.path.abspath(args.cache_dir or os.path.join(output_dir, 'ratio_stats_cache'))
     return mock_dir, true_halo_dir, output_dir, cache_dir
+
+
+def load_cosmology_params(cfg: dict, sim_ids: list[int]) -> dict[str, np.ndarray]:
+    """Return cosmological parameters aligned with the plotted simulation order."""
+    cosmo_path = repo_path(cfg['data_settings']['lh_cosmo_file'])
+    cosmo_all = np.loadtxt(cosmo_path)
+    sim_ids_arr = np.asarray(sim_ids, dtype=np.int64)
+    if sim_ids_arr.size == 0:
+        raise ValueError('No simulation ids supplied.')
+    if sim_ids_arr.min() < 0 or sim_ids_arr.max() >= len(cosmo_all):
+        raise ValueError(
+            f'Simulation ids [{sim_ids_arr.min()}, {sim_ids_arr.max()}] '
+            f'are outside cosmology table with {len(cosmo_all)} rows: {cosmo_path}'
+        )
+    cosmo = np.asarray(cosmo_all[sim_ids_arr], dtype=np.float64)
+    return {
+        'Omega_m': cosmo[:, 0],
+        'sigma_8': cosmo[:, 4],
+    }
 
 
 def safe_ratio(num: np.ndarray, den: np.ndarray, floor_frac: float = 1e-8) -> np.ndarray:
@@ -258,7 +283,7 @@ def cache_path(cache_dir: str, sim_id: int):
 
 
 def save_cache(path: str, stats: dict):
-    payload = {}
+    payload = {'cache_version': np.int32(CACHE_VERSION)}
     for name, (x, ratio) in stats.items():
         payload[f'{name}_x'] = x
         payload[f'{name}_ratio'] = ratio
@@ -267,6 +292,8 @@ def save_cache(path: str, stats: dict):
 
 def load_cache(path: str):
     data = np.load(path)
+    if 'cache_version' not in data or int(data['cache_version']) != CACHE_VERSION:
+        return None
     stats = {}
     for name in STAT_SPECS:
         x_key = f'{name}_x'
@@ -331,9 +358,9 @@ def compute_one(payload):
     k_t, p0_t, p2_t, p4_t = power_spectrum_multipoles(
         pos_rsd_t, None, ng, BoxSize, kmax=kmax, axis=2)
     stats['rsd_p0'] = interp_ratio(k_m, p0_m, k_t, p0_t)
-    stats['rsd_p2p0'] = interp_ratio(
-        k_m, multipole_over_monopole(p2_m, p0_m),
-        k_t, multipole_over_monopole(p2_t, p0_t),
+    stats['rsd_p2'] = interp_ratio(
+        k_m, p2_m,
+        k_t, p2_t,
         floor_frac=1e-4,
     )
     stats['rsd_p4p0'] = interp_ratio(
@@ -421,7 +448,7 @@ def nan_summary(rows: np.ndarray):
     return mean, p16, p84
 
 
-def set_auto_ylim(ax, rows, mean, p16, p84):
+def set_auto_ylim(ax, rows, mean, p16, p84, yscale='linear'):
     vals = np.concatenate([
         rows[np.isfinite(rows)],
         mean[np.isfinite(mean)],
@@ -429,8 +456,14 @@ def set_auto_ylim(ax, rows, mean, p16, p84):
         p84[np.isfinite(p84)],
         np.asarray([0.9, 1.0, 1.1]),
     ])
+    if yscale == 'log':
+        vals = vals[vals > 0]
     if vals.size == 0:
         ax.set_ylim(0.5, 1.5)
+        return
+    if yscale == 'log':
+        lo, hi = np.nanpercentile(vals, [1, 99])
+        ax.set_ylim(max(lo / 1.15, 1e-6), hi * 1.15)
         return
     lo, hi = np.nanpercentile(vals, [1, 99])
     pad = 0.08 * max(hi - lo, 0.2)
@@ -438,16 +471,22 @@ def set_auto_ylim(ax, rows, mean, p16, p84):
 
 
 def make_plot(stacked: OrderedDict, sim_ids: list[int], output_dir: str,
-              output_name: str, ylim, auto_ylim: bool):
+              output_name: str, ylim, auto_ylim: bool,
+              color_values: np.ndarray | None = None,
+              color_label: str | None = None,
+              output_suffix: str = '',
+              show_summary: bool = True):
     os.makedirs(output_dir, exist_ok=True)
     plt.rcParams.update({
-        'font.size': 10,
-        'axes.titlesize': 11,
-        'axes.labelsize': 10,
-        'xtick.labelsize': 8,
-        'ytick.labelsize': 8,
-        'legend.fontsize': 9,
-        'axes.linewidth': 0.9,
+        'font.size': 11,
+        'axes.titlesize': 12,
+        'axes.labelsize': 12,
+        'xtick.labelsize': 10,
+        'ytick.labelsize': 10,
+        'legend.fontsize': 10,
+        'axes.linewidth': 1.0,
+        'figure.facecolor': 'white',
+        'axes.facecolor': 'white',
     })
 
     n_panels = len(STAT_SPECS)
@@ -456,16 +495,42 @@ def make_plot(stacked: OrderedDict, sim_ids: list[int], output_dir: str,
     fig, axes = plt.subplots(nrows, ncols, figsize=(21, 4.2 * nrows),
                              constrained_layout=True)
     axes = np.ravel(axes)
+    cmap = None
+    norm = None
+    if color_values is not None:
+        color_values = np.asarray(color_values, dtype=np.float64)
+        if color_values.shape[0] != len(sim_ids):
+            raise ValueError(
+                f'color_values has length {color_values.shape[0]}, '
+                f'but there are {len(sim_ids)} simulations.'
+            )
+        finite_c = color_values[np.isfinite(color_values)]
+        if finite_c.size == 0:
+            raise ValueError(f'No finite values available for {color_label}.')
+        cmap = plt.get_cmap('viridis')
+        norm = plt.Normalize(vmin=float(finite_c.min()), vmax=float(finite_c.max()))
 
     for ax, (name, spec) in zip(axes, STAT_SPECS.items()):
         x, rows, _ = stacked[name]
-        mean, p16, p84 = nan_summary(rows)
+        yscale = spec.get('yscale', 'linear')
+        plot_rows = np.where(rows > 0, rows, np.nan) if yscale == 'log' else rows
+        mean, p16, p84 = nan_summary(plot_rows)
 
-        for row in rows:
-            ax.plot(x, row, color='0.45', alpha=0.16, lw=0.8, zorder=1)
-        ax.fill_between(x, p16, p84, color='0.45', alpha=0.24,
-                        linewidth=0, zorder=2, label='16th-84th percentile')
-        ax.plot(x, mean, color='k', lw=2.2, zorder=3, label='mean')
+        for i, row in enumerate(plot_rows):
+            if color_values is None:
+                color = '0.45'
+                alpha = 0.16
+                lw = 0.8
+            else:
+                color = cmap(norm(color_values[i]))
+                alpha = 0.38
+                lw = 0.95
+            ax.plot(x, row, color=color, alpha=alpha, lw=lw,
+                    zorder=1, solid_capstyle='round')
+        if show_summary:
+            ax.fill_between(x, p16, p84, color='0.45', alpha=0.24,
+                            linewidth=0, zorder=2, label='16th-84th percentile')
+            ax.plot(x, mean, color='k', lw=2.2, zorder=3, label='mean')
 
         ax.axhline(1.0, color='k', ls='--', lw=1.8, zorder=0)
         ax.axhline(0.9, color='0.25', ls='--', lw=0.8, zorder=0)
@@ -476,27 +541,49 @@ def make_plot(stacked: OrderedDict, sim_ids: list[int], output_dir: str,
         ax.set_xlabel(spec['xlabel'])
         ax.set_ylabel(spec['ylabel'])
         ax.set_xscale(spec['xscale'])
+        ax.set_yscale(yscale)
+        ax.tick_params(axis='both', which='major', length=5.5, width=1.0,
+                       labelsize=10, direction='out')
+        ax.tick_params(axis='both', which='minor', length=3.2, width=0.8,
+                       direction='out')
+        for spine in ax.spines.values():
+            spine.set_color('0.18')
+            spine.set_linewidth(0.9)
         if auto_ylim:
-            set_auto_ylim(ax, rows, mean, p16, p84)
+            set_auto_ylim(ax, plot_rows, mean, p16, p84, yscale=yscale)
         else:
             ax.set_ylim(*ylim)
 
     for ax in axes[n_panels:]:
         ax.axis('off')
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', ncol=2, frameon=False,
-               bbox_to_anchor=(0.5, 1.01))
+    if show_summary:
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc='upper center', ncol=2, frameon=False,
+                   bbox_to_anchor=(0.5, 1.01))
+    if color_values is not None:
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=axes[:n_panels].tolist(),
+                            shrink=0.82, pad=0.010,
+                            fraction=0.018, aspect=45)
+        cbar.set_label(color_label or 'cosmology', fontsize=12)
+        cbar.ax.tick_params(labelsize=10, length=5.0, width=0.9,
+                            direction='out')
+        cbar.outline.set_linewidth(0.8)
+
+    title_suffix = f' coloured by {color_label}' if color_values is not None else ''
     fig.suptitle(
         f'CHARM mock/true summary-statistic ratios: '
-        f'{len(sim_ids)} simulations ({min(sim_ids):04d}-{max(sim_ids):04d})',
+        f'{len(sim_ids)} simulations ({min(sim_ids):04d}-{max(sim_ids):04d})'
+        f'{title_suffix}',
         y=1.035,
         fontsize=15,
         fontweight='bold',
     )
 
-    pdf_path = os.path.join(output_dir, f'{output_name}.pdf')
-    png_path = os.path.join(output_dir, f'{output_name}.png')
+    pdf_path = os.path.join(output_dir, f'{output_name}{output_suffix}.pdf')
+    png_path = os.path.join(output_dir, f'{output_name}{output_suffix}.png')
     fig.savefig(pdf_path, bbox_inches='tight', dpi=180)
     fig.savefig(png_path, bbox_inches='tight', dpi=180)
     plt.close(fig)
@@ -561,13 +648,35 @@ def main():
                 print(f'[{sim_id:04d}] statistics ready', flush=True)
 
     results.sort(key=lambda item: item[0])
+    plotted_sim_ids = [sim_id for sim_id, _ in results]
     stacked = stack_stats(results)
     pdf_path, png_path = make_plot(
-        stacked, sim_ids, output_dir, args.output_name,
+        stacked, plotted_sim_ids, output_dir, args.output_name,
         tuple(args.ylim), bool(args.auto_ylim),
     )
     print(f'Saved figure: {pdf_path}', flush=True)
     print(f'Saved figure: {png_path}', flush=True)
+
+    cosmo_params = load_cosmology_params(cfg, plotted_sim_ids)
+    color_specs = [
+        ('Omega_m', r'$\Omega_m$', '_colored_Omega_m'),
+        ('sigma_8', r'$\sigma_8$', '_colored_sigma8'),
+    ]
+    for key, label, suffix in color_specs:
+        pdf_path, png_path = make_plot(
+            stacked,
+            plotted_sim_ids,
+            output_dir,
+            args.output_name,
+            tuple(args.ylim),
+            bool(args.auto_ylim),
+            color_values=cosmo_params[key],
+            color_label=label,
+            output_suffix=suffix,
+            show_summary=False,
+        )
+        print(f'Saved figure: {pdf_path}', flush=True)
+        print(f'Saved figure: {png_path}', flush=True)
 
 
 if __name__ == '__main__':

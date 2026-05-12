@@ -359,10 +359,14 @@ def reconstruct_catalog(sample_out, nb, nax, Nmax,
     # Global voxel indices for all flat entries
     ix_g, iy_g, iz_g = flat_idx_to_global_voxel(nb, nax)
 
-    # Voxel-centre physical positions (Mpc/h)
-    cx = (ix_g + 0.5) * cell
-    cy = (iy_g + 0.5) * cell
-    cz = (iz_g + 0.5) * cell
+    # Physical reference positions for the stored sub-voxel offsets.
+    # Training positions come from NGP_xyz_prop, which assigns
+    # index=int(pos/cell + 0.5) and stores offset=(pos - index*cell)/cell.
+    # Use index*cell here to stay consistent with the trained position and
+    # velocity-residual targets.
+    cx = ix_g * cell
+    cy = iy_g * cell
+    cz = iz_g * cell
 
     # Collect all halos
     pos_list  = []
@@ -382,7 +386,7 @@ def reconstruct_catalog(sample_out, nb, nax, Nmax,
         py = pos_flat[has_halo, ih * 3 + 1]
         pz = pos_flat[has_halo, ih * 3 + 2]
 
-        # Physical positions with periodic boundary conditions
+        # Physical positions with periodic boundary conditions.
         x_h = ((cx[has_halo] + px * cell) % BoxSize).astype(np.float32)
         y_h = ((cy[has_halo] + py * cell) % BoxSize).astype(np.float32)
         z_h = ((cz[has_halo] + pz * cell) % BoxSize).astype(np.float32)

@@ -1,20 +1,21 @@
 #!/usr/bin/env python
 """
-run_charm_joint_ddp.py
-----------------------
-Single DDP training runner for the unified CHARM model: jointly trains
-halo count, mass (M1 + Mdiff), sub-voxel position, velocity, and
-concentration heads sharing one CNN encoder.
+run_charm_joint_v2vel_ddp.py
+----------------------------
+DDP trainer for the v2vel experiment.  It initialises a model from an existing
+v2 checkpoint while intentionally leaving the velocity head freshly initialised.
+This is needed when `add_pos_cond_for_vel: true` changes only the velocity
+conditioning width.
 
 Launch (single node, 4 GPUs):
-    torchrun --standalone --nproc_per_node=4 charm/run_charm_joint_ddp.py \
-             --config run_configs/TRAIN_CHARM_JOINT.yaml
+    torchrun --standalone --nproc_per_node=4 charm/run_charm_joint_v2vel_ddp.py \
+             --config run_configs/TRAIN_CHARM_JOINT_v2vel.yaml
 
 Launch (multi-node, e.g. 2 nodes × 4 GPUs via SLURM):
     srun torchrun \
         --nnodes=$SLURM_NNODES --nproc_per_node=4 \
         --rdzv_backend=c10d --rdzv_endpoint=$MASTER_ADDR:29500 \
-        charm/run_charm_joint_ddp.py --config run_configs/TRAIN_CHARM_JOINT.yaml
+        charm/run_charm_joint_v2vel_ddp.py --config run_configs/TRAIN_CHARM_JOINT_v2vel.yaml
 
 Key improvements over the three separate runners:
   - All data loaded inside run_func() after DDP init (no module-level I/O)
@@ -25,6 +26,7 @@ Key improvements over the three separate runners:
   - Rank-0-gated checkpoint saves + dist.barrier() after save
   - Gradient clipping
   - Optional gradient checkpointing on encoder (saves GPU memory)
+  - Partial checkpoint initialisation from v2, excluding vel_model.*
 """
 
 import argparse
@@ -68,6 +70,13 @@ def parse_args():
     p.add_argument('--config', required=True, help='Path to YAML config file.')
     p.add_argument('--resume', default=None,
                    help='Path to checkpoint .pth to resume from.')
+    p.add_argument('--init_from', default=None,
+                   help='Optional source checkpoint for one-time partial '
+                        'initialisation. Skipped when resuming.')
+    p.add_argument('--finetune_from', default=None,
+                   help='Load full model/Kendall state from this checkpoint, '
+                        'but start a fresh schedule and optimizer. Ignored '
+                        'when resuming from checkpoint_dir.')
     p.add_argument('--wandb_run_name', default=None,
                    help='Override W&B run name.')
     p.add_argument('--no_wandb', action='store_true',
@@ -1121,6 +1130,174 @@ def load_checkpoint(
             ckpt['loss_min'], val_loss_min, optimizer_state)
 
 
+def _normalise_state_key(key: str) -> str:
+    """Accept raw, DDP, and torch.compile checkpoint key prefixes."""
+    key = key.replace('module.', '', 1)
+    key = key.replace('_orig_mod.', '', 1)
+    return key
+
+
+@torch.no_grad()
+def load_partial_model_init(
+        model: nn.Module,
+        path: str,
+        device: torch.device,
+        exclude_prefixes: tuple,
+        rank: int = 0,
+) -> None:
+    """
+    Load all compatible tensors from `path`, excluding requested prefixes.
+
+    This intentionally does not restore optimizer or Kendall state.  It is a
+    one-time warm start, not a resume.  Shape mismatches are skipped instead of
+    failing; for v2vel those mismatches should be confined to vel_model.*.
+    """
+    ckpt = torch.load(path, map_location=device)
+    src_state = ckpt.get('model_state', ckpt)
+    raw = model.module if isinstance(model, DDP) else model
+    dst_state = raw.state_dict()
+
+    loaded = []
+    skipped_excluded = []
+    skipped_missing = []
+    skipped_shape = []
+
+    for key, value in src_state.items():
+        key_n = _normalise_state_key(key)
+        if any(key_n.startswith(prefix) for prefix in exclude_prefixes):
+            skipped_excluded.append(key_n)
+            continue
+        if key_n not in dst_state:
+            skipped_missing.append(key_n)
+            continue
+        if tuple(dst_state[key_n].shape) != tuple(value.shape):
+            skipped_shape.append(
+                f'{key_n}: src={tuple(value.shape)} dst={tuple(dst_state[key_n].shape)}'
+            )
+            continue
+        dst_state[key_n].copy_(value.to(device=device, dtype=dst_state[key_n].dtype))
+        loaded.append(key_n)
+
+    raw.load_state_dict(dst_state, strict=True)
+
+    if not loaded:
+        raise RuntimeError(f'Partial init from {path} loaded zero tensors.')
+
+    if rank == 0:
+        print(
+            f'Partial init from {path}\n'
+            f'  loaded tensors:          {len(loaded)}\n'
+            f'  excluded by prefix:      {len(skipped_excluded)}\n'
+            f'  missing in destination:  {len(skipped_missing)}\n'
+            f'  shape mismatches:        {len(skipped_shape)}',
+            flush=True,
+        )
+        if skipped_shape:
+            print('  Shape mismatches skipped:', flush=True)
+            for msg in skipped_shape[:20]:
+                print(f'    {msg}', flush=True)
+            if len(skipped_shape) > 20:
+                print(f'    ... {len(skipped_shape) - 20} more', flush=True)
+
+
+def _planned_resume_path(args, tc: dict) -> str:
+    """Return the resume path that run_func will use, if any."""
+    resume_path = args.resume or tc.get('resume_checkpoint')
+    if resume_path is None:
+        auto = os.path.join(tc['checkpoint_dir'], 'charm_joint_resume.pth')
+        if os.path.exists(auto):
+            resume_path = auto
+    return resume_path
+
+
+def _same_checkpoint_dir(path: str, checkpoint_dir: str) -> bool:
+    src_dir = os.path.abspath(os.path.dirname(path))
+    dst_dir = os.path.abspath(checkpoint_dir)
+    return src_dir == dst_dir
+
+
+def _cfg_float(value, name: str) -> float:
+    """Parse numeric YAML values, including quoted/scientific strings."""
+    try:
+        return float(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f'Config value {name} must be numeric, got {value!r}') from e
+
+
+def _cfg_int(value, name: str) -> int:
+    """Parse integer YAML values with an explicit error message."""
+    try:
+        return int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f'Config value {name} must be an integer, got {value!r}') from e
+
+
+def load_finetune_checkpoint(
+        model:   nn.Module,
+        path:    str,
+        device:  torch.device,
+        kendall: nn.Module = None,
+        rank:    int = 0,
+) -> dict:
+    """
+    Load full model state for fine-tuning, but do not restore optimizer,
+    phase, step, or scheduler position.
+    """
+    ckpt = torch.load(path, map_location=device)
+    raw  = model.module if isinstance(model, DDP) else model
+    src_state = ckpt['model_state']
+    dst_state = raw.state_dict()
+    src_by_norm = {_normalise_state_key(k): v for k, v in src_state.items()}
+    missing = []
+    shape_mismatch = []
+    for dst_key, dst_value in dst_state.items():
+        src_value = src_by_norm.get(_normalise_state_key(dst_key))
+        if src_value is None:
+            missing.append(dst_key)
+            continue
+        if tuple(src_value.shape) != tuple(dst_value.shape):
+            shape_mismatch.append(
+                f'{dst_key}: src={tuple(src_value.shape)} '
+                f'dst={tuple(dst_value.shape)}'
+            )
+            continue
+        dst_state[dst_key].copy_(
+            src_value.to(device=device, dtype=dst_value.dtype)
+        )
+    if missing or shape_mismatch:
+        msg = [f'Could not fully load fine-tune checkpoint {path}.']
+        if missing:
+            msg.append(f'Missing tensors: {len(missing)}')
+            msg.extend(f'  {k}' for k in missing[:20])
+        if shape_mismatch:
+            msg.append(f'Shape mismatches: {len(shape_mismatch)}')
+            msg.extend(f'  {k}' for k in shape_mismatch[:20])
+        raise RuntimeError('\n'.join(msg))
+    raw.load_state_dict(dst_state, strict=True)
+    if kendall is not None and ckpt.get('kendall_state') is not None:
+        try:
+            kendall.load_state_dict(ckpt['kendall_state'])
+        except Exception as e:
+            print(f'Warning: could not restore Kendall state for fine-tune: {e}')
+
+    info = {
+        'global_step':  ckpt.get('global_step', 'unknown'),
+        'phase_idx':    ckpt.get('phase_idx', 'unknown'),
+        'val_loss_min': float(ckpt.get('val_loss_min', float('inf'))),
+        'has_optimizer': 'optimizer_state' in ckpt,
+    }
+    if rank == 0:
+        print(
+            f'Fine-tune seed loaded from {path}\n'
+            f'  seed_global_step={info["global_step"]}  '
+            f'seed_phase={info["phase_idx"]}  '
+            f'seed_val_loss={info["val_loss_min"]:.4f}\n'
+            f'  optimizer restored: no  schedule restored: no',
+            flush=True,
+        )
+    return info
+
+
 # ── Main training function ────────────────────────────────────────────────────
 
 def run_func(args):
@@ -1149,6 +1326,26 @@ def run_func(args):
 
     # ── Build model ───────────────────────────────────────────────────────
     model = build_model(cfg).to(device)
+    init_from = args.init_from or tc.get('init_from_checkpoint')
+    finetune_from = args.finetune_from or tc.get('finetune_from_checkpoint')
+    planned_resume = _planned_resume_path(args, tc)
+    if init_from and planned_resume is None and not finetune_from:
+        exclude_prefixes = tuple(
+            tc.get('init_exclude_prefixes', ['vel_model.'])
+        )
+        load_partial_model_init(
+            model, init_from, device,
+            exclude_prefixes=exclude_prefixes,
+            rank=rank,
+        )
+    elif init_from and rank == 0:
+        reason = (f'training will resume from {planned_resume}'
+                  if planned_resume else
+                  f'fine-tune will load full state from {finetune_from}')
+        print(
+            f'Skipping partial init from {init_from} because {reason}.',
+            flush=True,
+        )
     # torch.compile before DDP: Triton-based kernel fusion for ~10–20% gain.
     # DDP wraps the compiled graph without interfering with the compilation.
     # suppress_errors: Dynamo falls back to eager for the autoregressive RQS
@@ -1253,6 +1450,37 @@ def run_func(args):
                   f'step_in_phase={start_step_in_phase}\n'
                   f'  loss_min={loss_min:.4f}  val_loss_min={resume_val_loss_min:.4f}',
                   flush=True)
+    elif finetune_from:
+        if not os.path.exists(finetune_from):
+            raise FileNotFoundError(
+                f'fine-tune checkpoint not found: {finetune_from}'
+            )
+        if (_same_checkpoint_dir(finetune_from, tc['checkpoint_dir'])
+                and not tc.get('allow_finetune_in_source_dir', False)):
+            raise RuntimeError(
+                'Refusing fine-tune with checkpoint_dir equal to the source '
+                f'checkpoint directory: {tc["checkpoint_dir"]}. Use a new '
+                'checkpoint_dir, or set allow_finetune_in_source_dir: true.'
+            )
+        seed_info = load_finetune_checkpoint(
+            model, finetune_from, device, kendall=kendall, rank=rank)
+        global_step = int(tc.get('finetune_start_global_step', 0))
+        start_phase = int(tc.get('finetune_start_phase', 0))
+        start_step_in_phase = 0
+        loss_min = float('inf')
+        resume_opt_state = None
+        if tc.get('finetune_keep_best_val_threshold', True):
+            resume_val_loss_min = seed_info['val_loss_min']
+        else:
+            resume_val_loss_min = float('inf')
+        if rank == 0:
+            print(
+                f'Fine-tune schedule reset: global_step={global_step}  '
+                f'phase={start_phase}  step_in_phase={start_step_in_phase}\n'
+                f'  checkpoint_dir={tc["checkpoint_dir"]}\n'
+                f'  val_loss_min threshold={resume_val_loss_min:.4f}',
+                flush=True,
+            )
 
     # ── W&B ───────────────────────────────────────────────────────────────
     dist.barrier()
@@ -1274,11 +1502,12 @@ def run_func(args):
 
     # ── Training loop ─────────────────────────────────────────────────────
     log_every       = tc.get('log_every',  10)
-    save_every      = tc.get('save_every', 100)
-    val_every       = tc.get('val_every',  save_every)  # validate every N steps
-    grad_clip       = tc.get('grad_clip',  1.0)
-    min_lr          = tc.get('min_lr',     1e-6)
-    frozen_lr_scale = tc.get('frozen_lr_scale', 0.3)
+    save_every      = _cfg_int(tc.get('save_every', 100), 'train_settings.save_every')
+    val_every       = _cfg_int(tc.get('val_every', save_every), 'train_settings.val_every')
+    grad_clip       = _cfg_float(tc.get('grad_clip', 1.0), 'train_settings.grad_clip')
+    min_lr          = _cfg_float(tc.get('min_lr', 1e-6), 'train_settings.min_lr')
+    frozen_lr_scale = _cfg_float(
+        tc.get('frozen_lr_scale', 0.3), 'train_settings.frozen_lr_scale')
     val_loss_min    = resume_val_loss_min   # restored from checkpoint (inf on fresh start)
 
     # ── Verbose-logging knobs ─────────────────────────────────────────────
@@ -1348,9 +1577,22 @@ def run_func(args):
             continue
 
         active_heads = frozenset(phase_cfg['heads'])
-        lr_max       = phase_cfg['learning_rate']
-        nepochs_ph   = phase_cfg['nepochs']
-        warmup_frac  = phase_cfg.get('warmup_frac', 0.07)
+        lr_max       = _cfg_float(
+            phase_cfg['learning_rate'],
+            f'train_settings.phases[{phase_idx}].learning_rate',
+        )
+        nepochs_ph   = _cfg_int(
+            phase_cfg['nepochs'],
+            f'train_settings.phases[{phase_idx}].nepochs',
+        )
+        warmup_frac  = _cfg_float(
+            phase_cfg.get('warmup_frac', 0.07),
+            f'train_settings.phases[{phase_idx}].warmup_frac',
+        )
+        optimizer_phase_idx = _cfg_int(
+            phase_cfg.get('optimizer_phase_idx', phase_idx),
+            f'train_settings.phases[{phase_idx}].optimizer_phase_idx',
+        )
 
         # Step offset within this phase: 0 for fresh phases, >0 when resuming
         # mid-phase.  Governs both the inner-loop range and the LR schedule
@@ -1363,7 +1605,7 @@ def run_func(args):
             frozen_lr_scale  = frozen_lr_scale,
             kendall_module   = kendall,
             kendall_lr_scale = kendall_lr_scale,
-            phase_idx        = phase_idx,
+            phase_idx        = optimizer_phase_idx,
         )
 
         # Restore optimizer state when resuming mid-phase so AdamW first/second
@@ -1384,8 +1626,11 @@ def run_func(args):
 
         if rank == 0:
             print(f'\n{"="*70}')
+            opt_phase_msg = (f'  opt_phase={optimizer_phase_idx}'
+                             if optimizer_phase_idx != phase_idx else '')
             print(f' Phase {phase_idx}: heads={sorted(active_heads)}  '
-                  f'nepochs={nepochs_ph}  lr_max={lr_max:.2e}')
+                  f'nepochs={nepochs_ph}  lr_max={lr_max:.2e}'
+                  f'{opt_phase_msg}')
             print(f'{"="*70}', flush=True)
             if wb_run is not None:
                 wb_run.log({'global_step':        global_step,
@@ -1409,7 +1654,8 @@ def run_func(args):
             lr = get_lr(step_in_phase, nepochs_ph, lr_max, min_lr, warmup_frac)
             for pg in optimizer.param_groups:
                 if pg['name'] == 'encoder':
-                    pg['lr'] = lr if phase_idx == 0 else lr * frozen_lr_scale
+                    pg['lr'] = (lr if optimizer_phase_idx == 0
+                                else lr * frozen_lr_scale)
                 elif pg['name'] == 'kendall':
                     pg['lr'] = lr * kendall_lr_scale
                 else:

@@ -48,6 +48,7 @@ quantities, matching inference-time inputs more closely.
 | `charm/all_models_v2.py` | Distribution heads: SumGauss classifiers and neural spline flows. |
 | `charm/cnn_3d_stack_v2.py` | 3D CNN encoder with FiLM cosmology conditioning. |
 | `charm/run_charm_joint_ddp.py` | Standard DDP joint trainer. |
+| `charm/run_charm_joint_v2vel_ddp.py` | v2vel trainer; warm-starts from v2 while reinitialising `vel_model.*`. |
 | `charm/run_charm_joint_exposure_ddp.py` | Exposure-robust DDP trainer with rollout validation. |
 | `charm/run_inference_v2.py` | Full catalog inference for one simulation. |
 | `charm/run_test_inference_v2.py` | Batch inference over held-out test simulations. |
@@ -65,6 +66,7 @@ All configs inherit from `run_configs/BASE_CONFIG.yaml`.
 | Config | Launcher | Notes |
 | --- | --- | --- |
 | `TRAIN_CHARM_JOINT_v2.yaml` | `run_train_full_v2.sh` | Current running baseline DDP training. |
+| `TRAIN_CHARM_JOINT_v2vel.yaml` | `run_train_full_v2vel.sh` | v2 warm start with position-conditioned velocity head. |
 | `TRAIN_CHARM_JOINT_v3.yaml` | none currently in `run_scripts/` | Exposure config using `binary_loss_mode: subsample`; needs binary prior calibration for inference. |
 | `TRAIN_CHARM_JOINT_v4.yaml` | `run_train_full_v4.sh` | Exposure config using `binary_loss_mode: none`; longer final joint phase. |
 | `TRAIN_CHARM_JOINT_v0/v1.yaml` | `run_train_full_v0/v1.sh` | Earlier production runs. |

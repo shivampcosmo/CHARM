@@ -22,6 +22,9 @@ network_settings:
   base_dist_Mdiff:               gumbel
   add_Ntot_M1_cond_for_Mdiff:    true
 
+  add_pos_cond_for_vel: true
+
+
   # CRITICAL: must match sim_settings.Nmax — BASE_CONFIG defaults to 4 (for Nmax=4
   # trial run); override here so the multi head has one Gaussian component per
   # allowed count [1 … Nmax].  Forgetting this cap the mock catalog at 4 halos/voxel.

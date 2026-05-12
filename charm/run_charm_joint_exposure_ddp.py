@@ -210,14 +210,19 @@ def build_model(cfg: dict) -> nn.Module:
         mu_pos     = True,
     )
 
-    # ── velocity head ─────────────────────────────────────────────────────
-    num_cond_prop = num_cond_base + Nmax   # masses prepended
+    # ── property heads ────────────────────────────────────────────────────
+    # Position/concentration condition on masses. Velocity can optionally also
+    # condition on sub-voxel offsets, which changes only the velocity head width
+    # and therefore remains checkpoint-compatible when left false.
+    cond_pos_on_vel = bool(nc.get('add_pos_cond_for_vel', False))
+    num_cond_prop = num_cond_base + Nmax
+    num_cond_vel = num_cond_prop + (Nmax * 3 if cond_pos_on_vel else 0)
     model_vel = NSF_Autoreg_CNNcond(
         dim        = Nmax * 3,
         K          = nc['K_vel'],
         B          = nc['B_vel'],
         hidden_dim = nc['hidden_dim_MAF'],
-        num_cond   = num_cond_prop,
+        num_cond   = num_cond_vel,
         nflows     = nc['nflows_vel'],
         base_dist  = nc['base_dist_vel'],
         mu_pos     = False,
@@ -260,6 +265,7 @@ def build_model(cfg: dict) -> nn.Module:
         pos_model         = model_pos,
         cond_nhalos_on_m1        = add_N_for_M1,
         cond_m1_on_mdiff         = add_NM1_for_Md,
+        cond_pos_on_vel          = cond_pos_on_vel,
         use_film                 = use_film,
         concat_cosmo_after_film  = concat_cosmo_film,
         sep_binary_cond   = True,  num_cond_binary = num_cond_base,
@@ -1138,6 +1144,7 @@ def run_rollout_validation(model: nn.Module, val_gpu: dict,
     N_halos = val_gpu['N_halos']
     x_m1 = val_gpu['M1_norm'].unsqueeze(-1)
     x_mdiff = val_gpu['Mdiff_norm']
+    x_pos = val_gpu.get('pos_norm')
     mhalos = val_gpu['M_norm']
     cond_x = val_gpu['dm_cube']
     cond_nsh = val_gpu['dm_nsh']
@@ -1179,6 +1186,7 @@ def run_rollout_validation(model: nn.Module, val_gpu: dict,
                 nhalos_truth=nhalos[jb:jb + 1],
                 m1_truth=x_m1[jb:jb + 1],
                 mhalos_truth=mhalos[jb:jb + 1],
+                pos_truth=x_pos[jb:jb + 1] if x_pos is not None else None,
                 mdiff_truth=x_mdiff[jb:jb + 1],
                 sample_vel=True,
                 sample_conc=True,

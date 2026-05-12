@@ -102,12 +102,15 @@ def load_true(halo_dir: str, sim_id: int, z_snap: str = '0.5'):
 
     cell = BoxSize / grid  # Mpc/h per voxel (≈ 7.8125)
 
-    # Build absolute positions from voxel indices + sub-voxel offsets
+    # Build absolute positions from voxel indices + stored offsets.
+    # NGP_xyz_prop assigns index=int(pos/cell + 0.5) and stores
+    # offset=(pos - index*cell)/cell, so the reference point is index*cell,
+    # not the geometric voxel centre (index+0.5)*cell.
     ix, iy, iz = np.meshgrid(np.arange(grid), np.arange(grid), np.arange(grid),
                               indexing='ij')   # (128,128,128)
-    cx = (ix + 0.5) * cell   # voxel centre x in Mpc/h
-    cy = (iy + 0.5) * cell
-    cz = (iz + 0.5) * cell
+    cx = ix * cell
+    cy = iy * cell
+    cz = iz * cell
 
     pos_list  = []
     lgM_list  = []
@@ -424,20 +427,20 @@ def make_all_plots(mock, true_cat, meta, output_dir):
     ax.set_title('Real-space Pk ratios', fontsize=10)
     ax.legend(fontsize=9)
 
-    # ── Row 2: RSD Pk multipoles (P0, P2/P0, P4/P0) ─────────────────────────
+    # ── Row 2: RSD Pk multipoles (P0, P2, P4/P0) ────────────────────────────
     # RSD applied along z-axis (axis=2); multipoles computed with the same axis
     # so that the LOS decomposition is consistent.
-    pos_rsd_m = apply_rsd(mock['pos'],     mock['vel'],     BoxSize, z, cosmo, axis=2)
-    pos_rsd_t = apply_rsd(true_cat['pos'], true_cat['vel'], BoxSize, z, cosmo, axis=2)
+    pos_rsd_m = apply_rsd(mock['pos'],     mock['vel'],     BoxSize, z, cosmo, axis=0)
+    pos_rsd_t = apply_rsd(true_cat['pos'], true_cat['vel'], BoxSize, z, cosmo, axis=0)
 
     k_rs_m,  P0_m,  P2_m,  P4_m  = power_spectrum_multipoles(
-        pos_rsd_m, None, Ng, BoxSize, kmax=K_MAX, axis=2)
+        pos_rsd_m, None, Ng, BoxSize, kmax=K_MAX, axis=0)
     k_rs_t,  P0_t,  P2_t,  P4_t  = power_spectrum_multipoles(
-        pos_rsd_t, None, Ng, BoxSize, kmax=K_MAX, axis=2)
+        pos_rsd_t, None, Ng, BoxSize, kmax=K_MAX, axis=0)
     k_rs_mw, P0_mw, _, _ = power_spectrum_multipoles(
-        pos_rsd_m, M_mock_lin, Ng, BoxSize, kmax=K_MAX, axis=2)
+        pos_rsd_m, M_mock_lin, Ng, BoxSize, kmax=K_MAX, axis=0)
     k_rs_tw, P0_tw, _, _ = power_spectrum_multipoles(
-        pos_rsd_t, M_true_lin, Ng, BoxSize, kmax=K_MAX, axis=2)
+        pos_rsd_t, M_true_lin, Ng, BoxSize, kmax=K_MAX, axis=0)
 
     def _multipole_over_monopole(Pell, P0):
         """Safe dimensionless multipole ratio Pell/P0."""
@@ -446,20 +449,19 @@ def make_all_plots(mock, true_cat, meta, output_dir):
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.where((p0_abs > floor) & np.isfinite(Pell), Pell / P0, np.nan)
 
-    P2oP0_m = _multipole_over_monopole(P2_m, P0_m)
-    P2oP0_t = _multipole_over_monopole(P2_t, P0_t)
     P4oP0_m = _multipole_over_monopole(P4_m, P0_m)
     P4oP0_t = _multipole_over_monopole(P4_t, P0_t)
 
     def _pk_ratio_safe(Pm, Pt, k_m, k_t):
         """Element-wise mock/true ratio, NaN where |true| is negligibly small."""
         Pt_interp = np.interp(k_m, k_t, Pt)
-        scale = np.maximum(np.abs(Pt_interp), 1e-3 * np.abs(Pt).max())
+        floor = 1e-3 * np.nanmax(np.abs(Pt)) if np.any(np.isfinite(Pt)) else 0.0
         with np.errstate(divide='ignore', invalid='ignore'):
-            return np.where(scale > 0, Pm / Pt_interp, np.nan)
+            return np.where(np.abs(Pt_interp) > floor, Pm / Pt_interp, np.nan)
 
     def _add_ratio_subplot(gs_cell, k_m, k_t, Pm, Pt, title, ylabel,
-                           use_loglog=True):
+                           use_loglog=True, ratio_yscale='linear',
+                           main_ylim=None):
         sub = gs_cell.subgridspec(2, 1, height_ratios=[3, 1], hspace=0.05)
         ax_main = fig.add_subplot(sub[0])
         ax_rat  = fig.add_subplot(sub[1], sharex=ax_main)
@@ -470,14 +472,19 @@ def make_all_plots(mock, true_cat, meta, output_dir):
             ax_main.semilogx(k_m, Pm, '-', color=C_MOCK, lw=1.5, label='Mock')
             ax_main.semilogx(k_t, Pt, '-', color=C_TRUE, lw=1.5, label='True')
             ax_main.axhline(0, ls=':', color='gray', lw=0.8)
+        if main_ylim is not None:
+            ax_main.set_ylim(*main_ylim)
         ax_main.set_ylabel(ylabel)
         ax_main.set_title(title, fontsize=10)
         ax_main.legend(fontsize=9)
         plt.setp(ax_main.get_xticklabels(), visible=False)
         ratio = _pk_ratio_safe(Pm, Pt, k_m, k_t)
+        if ratio_yscale == 'log':
+            ratio = np.where(ratio > 0, ratio, np.nan)
         ax_rat.semilogx(k_m, ratio, '-', color='k', lw=1.2)
         ax_rat.axhline(1.0, ls='--', color='gray', lw=1.0)
         ax_rat.fill_between(k_m, 0.9, 1.1, alpha=0.15, color='gray')
+        ax_rat.set_yscale(ratio_yscale)
         ax_rat.set_ylim(0.5, 1.5)
         ax_rat.set_xlabel('$k$ [h/Mpc]')
         ax_rat.set_ylabel('mock/true')
@@ -490,16 +497,18 @@ def make_all_plots(mock, true_cat, meta, output_dir):
         use_loglog=True,
     )
     _add_ratio_subplot(
-        gs[2, 1], k_rs_m, k_rs_t, P2oP0_m, P2oP0_t,
-        title='RSD $P_2/P_0$ — quadrupole ratio (unweighted)',
-        ylabel='$P_2^s(k) / P_0^s(k)$',
-        use_loglog=False,
+        gs[2, 1], k_rs_m, k_rs_t, P2_m, P2_t,
+        title='RSD $P_2$ — quadrupole (unweighted)',
+        ylabel='$P_2^s(k)$ [(Mpc/h)$^3$]',
+        use_loglog=True,
+        ratio_yscale='linear',
     )
     _add_ratio_subplot(
         gs[2, 2], k_rs_m, k_rs_t, P4oP0_m, P4oP0_t,
         title='RSD $P_4/P_0$ — hexadecapole ratio (unweighted)',
         ylabel='$P_4^s(k) / P_0^s(k)$',
         use_loglog=False,
+        main_ylim=(-0.5, 0.5),
     )
     _add_ratio_subplot(
         gs[2, 3], k_rs_mw, k_rs_tw, P0_mw, P0_tw,
@@ -521,10 +530,17 @@ def make_all_plots(mock, true_cat, meta, output_dir):
         vm_h, _ = np.histogram(mock['vel'][:, ci],     bins=v_bins, density=True)
         vt_h, _ = np.histogram(true_cat['vel'][:, ci], bins=v_bins, density=True)
         pdf_max = max(pdf_max, vm_h.max(), vt_h.max())
-        ax.semilogy(v_mid, vm_h + 1e-12, ls='-',  color=C_MOCK,
+        # ax.semilogy(v_mid, vm_h + 1e-12, ls='-',  color=C_MOCK,
+        #             alpha=0.5 + 0.2*ci, lw=1.2, label=f'Mock {lab}')
+        # ax.semilogy(v_mid, vt_h + 1e-12, ls='--', color=C_TRUE,
+        #             alpha=0.5 + 0.2*ci, lw=1.2, label=f'True {lab}')
+
+        ax.plot(v_mid, vm_h + 1e-12, ls='-',  color=C_MOCK,
                     alpha=0.5 + 0.2*ci, lw=1.2, label=f'Mock {lab}')
-        ax.semilogy(v_mid, vt_h + 1e-12, ls='--', color=C_TRUE,
+        ax.plot(v_mid, vt_h + 1e-12, ls='--', color=C_TRUE,
                     alpha=0.5 + 0.2*ci, lw=1.2, label=f'True {lab}')
+
+
     if pdf_max > 0:
         ax.set_ylim(pdf_max * 1e-2, pdf_max * 1.5)
     ax.set_xlabel('Velocity [km/s]'); ax.set_ylabel('PDF')

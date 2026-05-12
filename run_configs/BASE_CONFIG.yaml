@@ -88,6 +88,10 @@ network_settings:
   B_vel:          [-0.5, 0.5]
   nflows_vel:     2
   base_dist_vel:  gauss
+  # If true, the velocity head is conditioned on the per-halo sub-voxel
+  # position offsets in addition to masses and shared encoder features.
+  # Keep false for compatibility with existing checkpoints.
+  add_pos_cond_for_vel: false
 
   # ── Concentration (normalised to [0, 1]) ──
   K_conc:         8

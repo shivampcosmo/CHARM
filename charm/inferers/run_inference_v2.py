@@ -17,18 +17,18 @@ Output arrays (all halos in the mock catalog):
 Usage:
     cd /mnt/ceph/users/spandey/CHARM_v2/CHARM
 
-    python charm/run_inference_v2.py \\
+    python charm/inferers/run_inference_v2.py \\
         --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14.yaml \\
         --sim_id 0
 
     # Override checkpoint explicitly:
-    python charm/run_inference_v2.py \\
+    python charm/inferers/run_inference_v2.py \\
         --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14.yaml \\
         --sim_id 0 \\
         --checkpoint ../model_checkpoints/CHARM_JOINT_trial_Mmin1e14/charm_joint_best_val.pth
 
     # Override output directory:
-    python charm/run_inference_v2.py \\
+    python charm/inferers/run_inference_v2.py \\
         --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14.yaml \\
         --sim_id 0 \\
         --output_dir ../inference_results/trial_Mmin1e14
@@ -46,7 +46,7 @@ from numpy.lib.stride_tricks import as_strided
 from scipy.interpolate import RegularGridInterpolator
 
 # ── make charm package importable ────────────────────────────────────────────
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Insert repo root so 'from charm.utils import ...' works as an absolute import,
 # and insert charm/ so direct 'import config_loader' works too.
 sys.path.insert(0, _REPO_ROOT)
@@ -54,7 +54,7 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, 'charm'))
 
 from config_loader import load_config
 from run_charm_joint_ddp import build_model
-from calibrate_binary_prior import predict as _calib_predict
+from inferers.calibrate_binary_prior import predict as _calib_predict
 
 
 def estimate_target_prior_from_cosmology(cosmo_vec, calibrator_path: str
@@ -557,7 +557,7 @@ def main():
                 f'--binary_target_prior was not given. No calibrator found '
                 f'at {cal_path}; pw_occ will be uncorrected and the mock '
                 f'count will be systematically over-predicted. To fix, run:\n'
-                f'    python charm/calibrate_binary_prior.py --config <CFG>\n'
+                f'    python charm/inferers/calibrate_binary_prior.py --config <CFG>\n'
                 f'or pass --binary_target_prior explicitly.',
                 flush=True,
             )

@@ -30,7 +30,7 @@
 #       --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14_balanced.yaml
 #
 # Run inference (with prior correction):
-#   python charm/run_inference_v2.py \
+#   python charm/inferers/run_inference_v2.py \
 #       --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14_balanced.yaml \
 #       --sim_id 0 --device cuda --binary_target_prior 3.27e-4
 

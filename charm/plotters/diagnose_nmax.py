@@ -13,11 +13,11 @@ vertical markers at Nmax = 4 and 8.
 
 Usage
 -----
-    python charm/diagnose_nmax.py \\
+    python charm/plotters/diagnose_nmax.py \\
         --config run_configs/TRAIN_CHARM_JOINT_v0.yaml
 
     # custom output path:
-    python charm/diagnose_nmax.py \\
+    python charm/plotters/diagnose_nmax.py \\
         --config run_configs/TRAIN_CHARM_JOINT_v0.yaml \\
         --output  diagnostics/nmax_bias.png \\
         --nsims   100 \\
@@ -36,7 +36,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'charm'))
 from config_loader import load_config
 

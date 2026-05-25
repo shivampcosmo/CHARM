@@ -13,6 +13,14 @@ except ImportError:
 from torch.distributions import HalfNormal, Weibull, Gumbel
 
 
+# Bounds for positive base-distribution parameters.  These preserve the old
+# exp(alpha) parameterisation inside the normal range, but prevent resumed
+# fine-tunes from driving base scales/variances to 0 or inf.
+BASE_PARAM_MIN = 1e-2
+BASE_PARAM_MAX = 1e2
+BASE_LOG_ARG_CLAMP = 80.0
+
+
 # ── Interpolation helper ──────────────────────────────────────────────────────
 
 def interpolate(x: torch.Tensor, xp: torch.Tensor, fp: torch.Tensor) -> torch.Tensor:
@@ -106,6 +114,88 @@ def _apply_rqs(
     return z.to(orig_dtype), log_det.to(orig_dtype)
 
 
+def _bounded_exp(raw: torch.Tensor,
+                 min_value: float = BASE_PARAM_MIN,
+                 max_value: float = BASE_PARAM_MAX) -> torch.Tensor:
+    """exp(raw), bounded in log-space to keep distribution params finite."""
+    lo = math.log(min_value)
+    hi = math.log(max_value)
+    return torch.exp(raw.float().clamp(lo, hi)).to(raw.dtype)
+
+
+def _safe_gumbel_log_prob(x: torch.Tensor,
+                          loc: torch.Tensor,
+                          scale: torch.Tensor) -> torch.Tensor:
+    """Numerically stable Gumbel log-prob with bounded exponent argument."""
+    x_f = x.float()
+    loc_f = loc.float()
+    scale_f = scale.float().clamp_min(BASE_PARAM_MIN)
+    z = ((x_f - loc_f) / scale_f).clamp(
+        -BASE_LOG_ARG_CLAMP, BASE_LOG_ARG_CLAMP
+    )
+    return -z - torch.exp(-z) - torch.log(scale_f)
+
+
+def _safe_weibull_log_prob(x: torch.Tensor,
+                           scale: torch.Tensor,
+                           concentration: torch.Tensor) -> torch.Tensor:
+    """Numerically stable Weibull log-prob for positive x."""
+    x_f = x.float()
+    scale_f = scale.float().clamp_min(BASE_PARAM_MIN)
+    conc_f = concentration.float().clamp_min(BASE_PARAM_MIN)
+    x_pos = x_f.clamp_min(1e-12)
+    log_x_over_scale = (torch.log(x_pos) - torch.log(scale_f)).clamp(
+        -BASE_LOG_ARG_CLAMP, BASE_LOG_ARG_CLAMP
+    )
+    pow_arg = (conc_f * log_x_over_scale).clamp(
+        -BASE_LOG_ARG_CLAMP, BASE_LOG_ARG_CLAMP
+    )
+    lp = (
+        torch.log(conc_f)
+        - torch.log(scale_f)
+        + (conc_f - 1.0) * log_x_over_scale
+        - torch.exp(pow_arg)
+    )
+    return torch.where(x_f > 0.0, lp, torch.full_like(lp, -100.0))
+
+
+def _safe_gauss_log_prob(x: torch.Tensor,
+                         mu: torch.Tensor,
+                         var: torch.Tensor) -> torch.Tensor:
+    """Gaussian log-prob with bounded variance and float32 math."""
+    x_f = x.float()
+    mu_f = mu.float()
+    var_f = var.float().clamp(BASE_PARAM_MIN, BASE_PARAM_MAX)
+    z = ((x_f - mu_f) / torch.sqrt(var_f)).clamp(
+        -BASE_LOG_ARG_CLAMP, BASE_LOG_ARG_CLAMP
+    )
+    return (
+        -0.5 * math.log(2 * math.pi)
+        -0.5 * torch.log(var_f)
+        -0.5 * z.pow(2)
+    )
+
+
+def _safe_gauss_mixture_log_prob(x: torch.Tensor,
+                                 mu_all: torch.Tensor,
+                                 var_all: torch.Tensor,
+                                 pw_all: torch.Tensor) -> torch.Tensor:
+    """Stable Gaussian-mixture log-prob; avoids log(sum(exp(.))) underflow."""
+    x_f = x.float().unsqueeze(-1)
+    mu_f = mu_all.float()
+    var_f = var_all.float().clamp(BASE_PARAM_MIN, BASE_PARAM_MAX)
+    log_pw = torch.log(pw_all.float().clamp_min(1e-12))
+    z = ((x_f - mu_f) / torch.sqrt(var_f)).clamp(
+        -BASE_LOG_ARG_CLAMP, BASE_LOG_ARG_CLAMP
+    )
+    comp = (
+        -0.5 * math.log(2 * math.pi)
+        -0.5 * torch.log(var_f)
+        -0.5 * z.pow(2)
+    )
+    return torch.logsumexp(log_pw + comp, dim=-1)
+
+
 def _get_gauss_params(out, ngauss, mu_pos, base_dist_pwall, mu_fixed=None):
     """
     Parse batched MLP output into Gaussian base-distribution parameters.
@@ -125,7 +215,7 @@ def _get_gauss_params(out, ngauss, mu_pos, base_dist_pwall, mu_fixed=None):
         mu, alpha = out[:, 0], out[:, 1]
         if mu_pos:
             mu = (1.0 + torch.tanh(mu)) / 2.0
-        return mu, torch.exp(alpha)
+        return mu, _bounded_exp(alpha)
 
     if mu_fixed is not None:
         alpha_all = out[:, 0:ngauss]
@@ -139,7 +229,7 @@ def _get_gauss_params(out, ngauss, mu_pos, base_dist_pwall, mu_fixed=None):
         mu_all    = (1.0 + torch.tanh(mu_all)) / 2.0 if mu_pos else torch.tanh(mu_all)
         al_idx, bt_idx = 3 * ngauss, 3 * ngauss + 1
 
-    var_all = torch.exp(alpha_all)
+    var_all = _bounded_exp(alpha_all)
 
     if base_dist_pwall == 'pl_exp':
         pw_raw = torch.exp(pw_raw)
@@ -166,7 +256,8 @@ def _sample_gaussian_mixture(mu_all, var_all, pw_all, device):
     for k in range(pw_all.shape[1]):
         ind = counts[:, k].bool()
         if ind.any():
-            x[ind] = mu_all[ind, k] + torch.randn(ind.sum(), device=device) * torch.sqrt(var_all[ind, k])
+            var_k = var_all[ind, k].clamp(BASE_PARAM_MIN, BASE_PARAM_MAX)
+            x[ind] = mu_all[ind, k] + torch.randn(ind.sum(), device=device) * torch.sqrt(var_k)
     return x
 
 
@@ -383,33 +474,28 @@ class NSF_1var_CNNcond(nn.Module):
         out = self.layer_init_gauss(cond_inp)
         mu, alpha = out[:, 0], out[:, 1]
         if self.base_dist == 'weibull':
-            return torch.exp(mu), torch.exp(alpha)          # scale, conc
+            return _bounded_exp(mu), _bounded_exp(alpha)    # scale, conc
         # gumbel
         if self.mu_pos:
             mu = (1.0 + torch.tanh(mu)) / 2.0
-        return mu, torch.exp(alpha)                         # loc, scale
+        return mu, _bounded_exp(alpha)                      # loc, scale
 
     def _base_logp(self, x, params):
         bd = self.base_dist
         if bd == 'gauss':
             if self.ngauss == 1:
                 mu, var = params
-                return -0.5 * math.log(2 * math.pi) - 0.5 * torch.log(var) - 0.5 * (x - mu) ** 2 / var
+                return _safe_gauss_log_prob(x, mu, var)
             mu_all, var_all, pw_all = params
-            Li = sum(
-                pw_all[:, i] / torch.sqrt(2 * np.pi * var_all[:, i])
-                * torch.exp(-0.5 * (x - mu_all[:, i]) ** 2 / var_all[:, i])
-                for i in range(self.ngauss)
-            )
-            lp = torch.log(Li)
+            lp = _safe_gauss_mixture_log_prob(x, mu_all, var_all, pw_all)
         elif bd == 'halfgauss':
             mu, var = params
             x2 = torch.exp(x - mu)
             lp = HalfNormal(torch.sqrt(var)).log_prob(x2)
         elif bd == 'weibull':
-            lp = Weibull(*params, validate_args=False).log_prob(x)
+            lp = _safe_weibull_log_prob(x, *params)
         elif bd == 'gumbel':
-            lp = Gumbel(*params, validate_args=False).log_prob(x)
+            lp = _safe_gumbel_log_prob(x, *params)
         elif bd == 'physical_hmf':
             lp = interpolate(x[None, :], self.lgM_rs, self.hmf_logpdf)[0, :]
         else:
@@ -541,38 +627,35 @@ class NSF_Autoreg_CNNcond(nn.Module):
             if self.ngauss == 1:
                 mu_raw, sig_raw = out[:, 0], out[:, 1]
                 mu = 0.0 * mu_raw if self.mu_pos else torch.tanh(mu_raw)
-                sig = 0.25 * span * (1.0 + torch.tanh(sig_raw)) * 0.5
+                sig = (
+                    0.25 * span * (1.0 + torch.tanh(sig_raw)) * 0.5
+                ).clamp_min(BASE_PARAM_MIN)
                 return mu, sig
             return _get_gauss_params(out, self.ngauss, self.mu_pos, self.base_dist_pwall)
 
         # weibull / gumbel
         mu, alpha = out[:, 0], out[:, 1]
         if bd == 'weibull':
-            return torch.exp(mu), torch.exp(alpha)
+            return _bounded_exp(mu), _bounded_exp(alpha)
         if self.mu_pos:
             mu = (1.0 + torch.tanh(mu)) / 2.0
-        return mu, torch.exp(alpha)
+        return mu, _bounded_exp(alpha)
 
     def _base_logp_jd(self, jd, x, params):
         bd = self.base_dist
         if bd == 'gauss':
             if self.ngauss == 1:
                 mu, sig = params
-                return -0.5 * math.log(2 * math.pi) - torch.log(sig) - 0.5 * (x - mu) ** 2 / sig ** 2
+                return _safe_gauss_log_prob(x, mu, sig.square())
             mu_all, var_all, pw_all = params
-            Li = sum(
-                pw_all[:, i] / torch.sqrt(2 * np.pi * var_all[:, i])
-                * torch.exp(-0.5 * (x - mu_all[:, i]) ** 2 / var_all[:, i])
-                for i in range(self.ngauss)
-            )
-            return torch.log(Li)
+            return _safe_gauss_mixture_log_prob(x, mu_all, var_all, pw_all)
         if bd == 'halfgauss':
             mu, sig = params
             lp = HalfNormal(sig).log_prob(x - mu)
         elif bd == 'weibull':
-            lp = Weibull(*params).log_prob(x)
+            lp = _safe_weibull_log_prob(x, *params)
         elif bd == 'gumbel':
-            lp = Gumbel(*params).log_prob(x)
+            lp = _safe_gumbel_log_prob(x, *params)
         else:
             raise ValueError(f"base_dist '{bd}' not recognised")
         return torch.where(torch.isfinite(lp), lp, torch.full_like(lp, -100.0))
@@ -702,7 +785,7 @@ class NSF_M_all_uncond(nn.Module):
                 mu, alpha = p[0], p[1]
                 if self.mu_pos:
                     mu = (1.0 + torch.tanh(mu)) / 2.0
-                return mu, torch.exp(alpha)
+                return mu, _bounded_exp(alpha)
             # mixture — reuse batched helper with a fake batch dim then squeeze
             mu_all, var_all, pw_all = _get_gauss_params(
                 p.unsqueeze(0), self.ngauss, self.mu_pos, self.base_dist_pwall
@@ -710,31 +793,31 @@ class NSF_M_all_uncond(nn.Module):
             return mu_all[0], var_all[0], pw_all[0]   # each (ngauss,)
         mu, alpha = p[0], p[1]
         if bd == 'weibull':
-            return torch.exp(mu), torch.exp(alpha)
+            return _bounded_exp(mu), _bounded_exp(alpha)
         if self.mu_pos:
             mu = (1.0 + torch.tanh(mu)) / 2.0
-        return mu, torch.exp(alpha)
+        return mu, _bounded_exp(alpha)
 
     def _base_logp(self, x, params, dev):
         bd = self.base_dist
         if bd == 'gauss':
             if self.ngauss == 1:
                 mu, var = params
-                return -0.5 * math.log(2 * math.pi) - 0.5 * torch.log(var) - 0.5 * (x - mu) ** 2 / var
+                return _safe_gauss_log_prob(x, mu, var)
             mu_all, var_all, pw_all = params   # each (ngauss,) — broadcast over N
-            Li = sum(
-                pw_all[i] / torch.sqrt(2 * np.pi * var_all[i])
-                * torch.exp(-0.5 * (x - mu_all[i]) ** 2 / var_all[i])
-                for i in range(self.ngauss)
+            return _safe_gauss_mixture_log_prob(
+                x,
+                mu_all.unsqueeze(0).expand(x.shape[0], -1),
+                var_all.unsqueeze(0).expand(x.shape[0], -1),
+                pw_all.unsqueeze(0).expand(x.shape[0], -1),
             )
-            return torch.log(Li)
         if bd == 'halfgauss':
             mu, var = params
             lp = HalfNormal(torch.sqrt(var)).log_prob(torch.exp(x - mu))
         elif bd == 'weibull':
-            lp = Weibull(*params, validate_args=False).log_prob(x)
+            lp = _safe_weibull_log_prob(x, *params)
         elif bd == 'gumbel':
-            lp = Gumbel(*params, validate_args=False).log_prob(x)
+            lp = _safe_gumbel_log_prob(x, *params)
         elif bd == 'physical_hmf':
             lp = interpolate(x[None, :], self.lgM_rs, self.hmf_logpdf)[0, :]
         else:

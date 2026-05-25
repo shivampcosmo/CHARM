@@ -370,6 +370,86 @@ class KendallWeighting(nn.Module):
 
 # ── Optimizer with parameter groups ──────────────────────────────────────────
 
+HEAD_NAMES = ('binary', 'multi', 'm1', 'mdiff', 'pos', 'vel', 'conc')
+_HEAD_MODULE_ATTRS = {
+    'binary': ('binary_model',),
+    'multi':  ('multiclass_model',),
+    'm1':     ('m1_model',),
+    'mdiff':  ('mdiff_model',),
+    'pos':    ('pos_model',),
+    'vel':    ('vel_model',),
+    'conc':   ('conc_model',),
+}
+
+
+def _unwrap_train_model(model: nn.Module) -> nn.Module:
+    raw = model.module if isinstance(model, DDP) else model
+    return getattr(raw, '_orig_mod', raw)
+
+
+def _normalise_heads(value, field_name: str):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value.lower() == 'all':
+            return set(HEAD_NAMES)
+        heads = {value}
+    else:
+        heads = set(value)
+    unknown = sorted(heads.difference(HEAD_NAMES))
+    if unknown:
+        raise ValueError(f'{field_name} contains unknown heads: {unknown}')
+    return heads
+
+
+def _iter_head_modules(raw_model: nn.Module, head: str):
+    for attr in _HEAD_MODULE_ATTRS[head]:
+        module = getattr(raw_model, attr, None)
+        if module is not None:
+            yield module
+    if hasattr(raw_model, 'proj_layers') and head in raw_model.proj_layers:
+        yield raw_model.proj_layers[head]
+
+
+def configure_phase_trainability(
+        model: nn.Module,
+        train_encoder: bool = True,
+        trainable_heads=None,
+) -> dict:
+    """
+    Set per-phase requires_grad flags.
+
+    trainable_heads=None preserves historical behavior: all head modules are
+    trainable.  Setting train_encoder=false lets a phase train only fresh heads
+    against fixed encoder features and fixed upstream/downstream heads.
+    """
+    raw_model = _unwrap_train_model(model)
+    heads = _normalise_heads(trainable_heads, 'trainable_heads')
+
+    if heads is None and train_encoder:
+        for param in raw_model.parameters():
+            param.requires_grad_(True)
+    else:
+        for param in raw_model.parameters():
+            param.requires_grad_(False)
+        if train_encoder:
+            for param in raw_model.encoder.parameters():
+                param.requires_grad_(True)
+        for head in (set(HEAD_NAMES) if heads is None else heads):
+            for module in _iter_head_modules(raw_model, head):
+                for param in module.parameters():
+                    param.requires_grad_(True)
+
+    return {
+        'train_encoder': train_encoder,
+        'trainable_heads': sorted(HEAD_NAMES if heads is None else heads),
+        'trainable_params': sum(
+            p.numel() for p in raw_model.parameters() if p.requires_grad
+        ),
+        'total_params': sum(p.numel() for p in raw_model.parameters()),
+    }
+
+
 def build_optimizer(
         model:            nn.Module,
         lr:               float,
@@ -380,34 +460,65 @@ def build_optimizer(
         phase_idx:        int   = 0,
 ) -> torch.optim.Optimizer:
     """
-    Three parameter groups:
-      - encoder          : lr * frozen_lr_scale  (stable, already warm)
-      - heads            : lr                    (new + previously active)
+    Up to three parameter groups:
+      - encoder          : lr * frozen_lr_scale  (when trainable)
+      - heads            : lr                    (selected trainable heads)
       - kendall (opt.)   : lr * kendall_lr_scale (slow-moving uncertainty params)
 
     Using a lower LR for the encoder at phase transitions prevents it from
     over-fitting to the new head's early high-loss conditioning signal.
-    In phase 0 frozen_lr_scale is set to 1.0 (all parameters at full LR).
+    Phase-level trainability is applied before this function is called.
     """
-    raw_model = model.module if isinstance(model, DDP) else model
+    raw_model = _unwrap_train_model(model)
 
     encoder_ids = {id(p) for p in raw_model.encoder.parameters()}
     group_enc, group_heads = [], []
     for _, param in raw_model.named_parameters():
+        if not param.requires_grad:
+            continue
         (group_enc if id(param) in encoder_ids else group_heads).append(param)
 
     enc_lr = lr if phase_idx == 0 else lr * frozen_lr_scale
-    param_groups = [
-        {'params': group_enc,   'lr': enc_lr, 'name': 'encoder'},
-        {'params': group_heads, 'lr': lr,     'name': 'heads'},
-    ]
+    param_groups = []
+    if group_enc:
+        param_groups.append({'params': group_enc, 'lr': enc_lr, 'name': 'encoder'})
+    if group_heads:
+        param_groups.append({'params': group_heads, 'lr': lr, 'name': 'heads'})
     if kendall_module is not None:
         param_groups.append({
             'params': list(kendall_module.parameters()),
             'lr':     lr * kendall_lr_scale,
             'name':   'kendall',
         })
+    if not param_groups:
+        raise RuntimeError('Optimizer would have no trainable parameters.')
     return torch.optim.AdamW(param_groups, weight_decay=weight_decay)
+
+
+def _optimizer_params(optimizer: torch.optim.Optimizer) -> list:
+    return [p for pg in optimizer.param_groups for p in pg['params']]
+
+
+def _optimizer_group_lr(optimizer: torch.optim.Optimizer, name: str) -> float:
+    for pg in optimizer.param_groups:
+        if pg.get('name') == name:
+            return pg['lr']
+    return 0.0
+
+
+def _nonfinite_grad_names(*modules: nn.Module, max_names: int = 20) -> list:
+    bad = []
+    with torch.no_grad():
+        for module in modules:
+            if module is None:
+                continue
+            for name, param in module.named_parameters():
+                grad = param.grad
+                if grad is not None and not torch.isfinite(grad).all():
+                    bad.append(name)
+                    if len(bad) >= max_names:
+                        return bad
+    return bad
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -1593,6 +1704,23 @@ def run_func(args):
             phase_cfg.get('optimizer_phase_idx', phase_idx),
             f'train_settings.phases[{phase_idx}].optimizer_phase_idx',
         )
+        train_encoder = bool(phase_cfg.get('train_encoder', True))
+        trainable_heads_cfg = phase_cfg.get(
+            'trainable_heads',
+            phase_cfg.get('trainable', None),
+        )
+        trainability = configure_phase_trainability(
+            model,
+            train_encoder=train_encoder,
+            trainable_heads=trainable_heads_cfg,
+        )
+        train_kendall = bool(phase_cfg.get('train_kendall', True))
+        kendall_phase_active = (
+            use_kendall
+            and kendall is not None
+            and train_kendall
+            and phase_idx >= tc.get('kendall_start_phase', 0)
+        )
 
         # Step offset within this phase: 0 for fresh phases, >0 when resuming
         # mid-phase.  Governs both the inner-loop range and the LR schedule
@@ -1603,7 +1731,7 @@ def run_func(args):
             model,
             lr               = lr_max,
             frozen_lr_scale  = frozen_lr_scale,
-            kendall_module   = kendall,
+            kendall_module   = kendall if kendall_phase_active else None,
             kendall_lr_scale = kendall_lr_scale,
             phase_idx        = optimizer_phase_idx,
         )
@@ -1631,6 +1759,14 @@ def run_func(args):
             print(f' Phase {phase_idx}: heads={sorted(active_heads)}  '
                   f'nepochs={nepochs_ph}  lr_max={lr_max:.2e}'
                   f'{opt_phase_msg}')
+            print(
+                f'  train_encoder={trainability["train_encoder"]}  '
+                f'trainable_heads={trainability["trainable_heads"]}  '
+                f'trainable_params={trainability["trainable_params"]/1e6:.2f}M'
+                f'/{trainability["total_params"]/1e6:.2f}M  '
+                f'kendall_trainable={kendall_phase_active}',
+                flush=True,
+            )
             print(f'{"="*70}', flush=True)
             if wb_run is not None:
                 wb_run.log({'global_step':        global_step,
@@ -1674,11 +1810,7 @@ def run_func(args):
                 torch.cuda.synchronize(device)
             fwd_t0 = time.time() if verbose else None
 
-            kendall_active = (
-                use_kendall
-                and kendall is not None
-                and phase_idx >= tc.get('kendall_start_phase', 0)
-            )
+            kendall_active = kendall_phase_active
 
             def _s(t, jb):
                 return t[jb:jb + 1] if t is not None else None
@@ -1735,12 +1867,19 @@ def run_func(args):
             _hb('forward+backward done', global_step)
 
             # ── grad clip ─────────────────────────────────────────────────
-            all_params = list(model.parameters())
-            if kendall_active:
-                all_params += list(kendall.parameters())
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                all_params, max_norm=grad_clip
-            ).item()
+            all_params = _optimizer_params(optimizer)
+            try:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    all_params, max_norm=grad_clip, error_if_nonfinite=True
+                ).item()
+            except RuntimeError as e:
+                bad = _nonfinite_grad_names(
+                    model, kendall if kendall_active else None
+                )
+                detail = ', '.join(bad) if bad else 'no individual bad grad found'
+                raise RuntimeError(
+                    f'{e}\nFirst non-finite gradient tensors: {detail}'
+                ) from e
             if verbose and torch.cuda.is_available():
                 torch.cuda.synchronize(device)
             _hb('grad-clip done', global_step)
@@ -1771,6 +1910,11 @@ def run_func(args):
             loss_t = loss.detach().clone()
             dist.all_reduce(loss_t, op=dist.ReduceOp.AVG)
             global_loss = loss_t.item()
+            if not math.isfinite(global_loss):
+                raise RuntimeError(
+                    f'Non-finite global loss at step={global_step} '
+                    f'phase={phase_idx}; refusing to checkpoint a bad state.'
+                )
             _hb('all_reduce done', global_step)
 
             # ── step-time bookkeeping (rank 0, verbose only) ──────────────
@@ -1789,8 +1933,8 @@ def run_func(args):
 
             # ── logging ───────────────────────────────────────────────────
             if do_stdout:
-                lr_enc = optimizer.param_groups[0]['lr']
-                lr_h   = optimizer.param_groups[1]['lr']
+                lr_enc = _optimizer_group_lr(optimizer, 'encoder')
+                lr_h   = _optimizer_group_lr(optimizer, 'heads')
                 log_metrics(
                     wb_run, losses, global_step,
                     phase_idx, lr_enc, lr_h, grad_norm, device,
@@ -1813,8 +1957,8 @@ def run_func(args):
                     print(f'    σ-table: {kendall.sigma_str()}', flush=True)
             elif do_wandb_hf:
                 # High-frequency W&B push — skip stdout entirely.
-                lr_enc = optimizer.param_groups[0]['lr']
-                lr_h   = optimizer.param_groups[1]['lr']
+                lr_enc = _optimizer_group_lr(optimizer, 'encoder')
+                lr_h   = _optimizer_group_lr(optimizer, 'heads')
                 log_metrics(
                     wb_run, losses, global_step,
                     phase_idx, lr_enc, lr_h, grad_norm, device,

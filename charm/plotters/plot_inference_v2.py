@@ -17,13 +17,13 @@ Usage:
     cd /mnt/ceph/users/spandey/CHARM_v2/CHARM
 
     # Derive true-halo directory automatically from config:
-    python charm/plot_inference_v2.py \\
+    python charm/plotters/plot_inference_v2.py \\
         --config run_configs/TRAIN_CHARM_JOINT_v0.yaml \\
         --mock   ../model_checkpoints/CHARM_JOINT_v0/inference/mock_catalog_sim0003.npz \\
         --sim_id 3
 
     # Override true-halo directory explicitly:
-    python charm/plot_inference_v2.py \\
+    python charm/plotters/plot_inference_v2.py \\
         --mock   ../model_checkpoints/CHARM_JOINT_v0/inference/mock_catalog_sim0003.npz \\
         --sim_id 3 \\
         --true_halo_dir ../data/halos_Mmin5e12
@@ -40,7 +40,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LogNorm
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'charm'))
 
 from config_loader import load_config

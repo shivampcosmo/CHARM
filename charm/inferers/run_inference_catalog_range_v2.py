@@ -1,17 +1,10 @@
 #!/usr/bin/env python
 """
-Run CHARM inference over the held-out test simulations.
+Run CHARM inference over a range of simulations and save clean mock catalogs.
 
-Example:
-    python charm/run_test_inference_v2.py \
-        --config run_configs/TRAIN_CHARM_JOINT_v2.yaml \
-        --sim_start 1900 \
-        --sim_end 2000 \
-        --num_workers 8 \
-        --device cpu
-
-`--sim_end` is exclusive, so the default test range 1900..1999 contains
-100 simulations.
+This is a thin batch wrapper around run_inference_v2.py.  It does not add any
+RSD-position noise and does not compute summary statistics; downstream plotting
+scripts should load the saved mock_catalog_simXXXX.npz files.
 """
 
 from __future__ import annotations
@@ -24,7 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'charm'))
 
 from config_loader import load_config
@@ -40,12 +33,9 @@ class Job:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description='Run run_inference_v2.py over the held-out test sims.',
-    )
+    p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('--config', required=True,
-                   help='Path to YAML config.')
+                   help='Path to YAML training config.')
     p.add_argument('--sim_start', type=int, default=None,
                    help='First simulation id. Defaults to nsims_train + nsims_val.')
     p.add_argument('--sim_end', type=int, default=None,
@@ -55,7 +45,7 @@ def parse_args():
     p.add_argument('--num_workers', type=int, default=1,
                    help='Number of simulations to run concurrently.')
     p.add_argument('--device', default='cpu',
-                   help='Device passed to run_inference_v2.py. Use cpu for CPU workers.')
+                   help='Device passed to run_inference_v2.py.')
     p.add_argument('--threads_per_worker', type=int, default=1,
                    help='CPU BLAS/OpenMP/Torch threads exposed to each worker.')
     p.add_argument('--checkpoint', default=None,
@@ -74,7 +64,7 @@ def parse_args():
     return p.parse_args()
 
 
-def _default_sim_ids(cfg: dict, sim_start: int | None, sim_end: int | None) -> list[int]:
+def default_sim_ids(cfg: dict, sim_start: int | None, sim_end: int | None) -> list[int]:
     sc = cfg['sim_settings']
     if sim_start is None:
         sim_start = int(sc.get('nsims_train', 1800)) + int(sc.get('nsims_val', 100))
@@ -85,14 +75,15 @@ def _default_sim_ids(cfg: dict, sim_start: int | None, sim_end: int | None) -> l
     return list(range(sim_start, sim_end))
 
 
-def _resolve_output_dir(cfg: dict, output_dir: str | None) -> str:
+def resolve_output_dir(cfg: dict, output_dir: str | None) -> str:
     if output_dir:
         return os.path.abspath(output_dir)
     ckpt_dir = os.path.join(_REPO_ROOT, cfg['train_settings']['checkpoint_dir'])
     return os.path.abspath(os.path.join(ckpt_dir, 'inference'))
 
 
-def _build_jobs(args, cfg: dict, sim_ids: list[int], output_dir: str) -> tuple[list[Job], list[int]]:
+def build_jobs(args, cfg: dict, sim_ids: list[int],
+               output_dir: str) -> tuple[list[Job], list[int]]:
     os.makedirs(output_dir, exist_ok=True)
     log_dir = os.path.join(output_dir, 'logs')
     os.makedirs(log_dir, exist_ok=True)
@@ -105,7 +96,7 @@ def _build_jobs(args, cfg: dict, sim_ids: list[int], output_dir: str) -> tuple[l
 
     jobs = []
     skipped = []
-    script = os.path.join(_REPO_ROOT, 'charm', 'run_inference_v2.py')
+    script = os.path.join(_REPO_ROOT, 'charm', 'inferers', 'run_inference_v2.py')
 
     for sim_id in sim_ids:
         out_path = os.path.join(output_dir, f'mock_catalog_sim{sim_id:04d}.npz')
@@ -136,7 +127,7 @@ def _build_jobs(args, cfg: dict, sim_ids: list[int], output_dir: str) -> tuple[l
     return jobs, skipped
 
 
-def _run_job(job: Job) -> tuple[int, int, float, str]:
+def run_job(job: Job) -> tuple[int, int, float, str]:
     t0 = time.time()
     with open(job.log_path, 'w') as log:
         log.write(' '.join(job.command) + '\n\n')
@@ -155,16 +146,15 @@ def _run_job(job: Job) -> tuple[int, int, float, str]:
 def main():
     args = parse_args()
     cfg = load_config(args.config)
-    sim_ids = args.sim_ids if args.sim_ids else _default_sim_ids(
+    sim_ids = args.sim_ids if args.sim_ids else default_sim_ids(
         cfg, args.sim_start, args.sim_end)
-    output_dir = _resolve_output_dir(cfg, args.output_dir)
-    jobs, skipped = _build_jobs(args, cfg, sim_ids, output_dir)
+    output_dir = resolve_output_dir(cfg, args.output_dir)
+    jobs, skipped = build_jobs(args, cfg, sim_ids, output_dir)
 
     print(f'Output directory: {output_dir}', flush=True)
     print(f'Requested simulations: {len(sim_ids)}', flush=True)
     if skipped:
-        print(f'Skipping {len(skipped)} existing catalogs '
-              f'({min(skipped):04d}..{max(skipped):04d}). '
+        print(f'Skipping {len(skipped)} existing catalogs. '
               f'Use --overwrite to rerun.', flush=True)
     if not jobs:
         print('Nothing to run.', flush=True)
@@ -177,7 +167,7 @@ def main():
 
     failures = []
     with futures.ProcessPoolExecutor(max_workers=n_workers) as ex:
-        fut_to_sim = {ex.submit(_run_job, job): job.sim_id for job in jobs}
+        fut_to_sim = {ex.submit(run_job, job): job.sim_id for job in jobs}
         for fut in futures.as_completed(fut_to_sim):
             sim_id, returncode, elapsed, log_path = fut.result()
             if returncode == 0:

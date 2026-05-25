@@ -39,16 +39,16 @@ up to 2× for the densest simulations, causing 20–40% occupancy errors.
 Usage
 -----
     # Mmin=5e12, 1800 sims, degree-3 polynomial (default):
-    python charm/calibrate_binary_prior.py \\
+    python charm/inferers/calibrate_binary_prior.py \\
         --config run_configs/TRAIN_CHARM_JOINT_v0.yaml
 
     # Explicit degree and Ridge regularisation:
-    python charm/calibrate_binary_prior.py \\
+    python charm/inferers/calibrate_binary_prior.py \\
         --config run_configs/TRAIN_CHARM_JOINT_v0.yaml \\
         --poly_degree 3 --ridge_alpha 0.01
 
     # Legacy degree-2 (for small training sets):
-    python charm/calibrate_binary_prior.py \\
+    python charm/inferers/calibrate_binary_prior.py \\
         --config run_configs/TRAIN_CHARM_JOINT_trial_Mmin1e14_balanced.yaml \\
         --poly_degree 2
 
@@ -64,7 +64,7 @@ from itertools import combinations_with_replacement
 import h5py
 import numpy as np
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'charm'))
 
 from config_loader import load_config

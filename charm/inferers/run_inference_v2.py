@@ -53,7 +53,7 @@ sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'charm'))
 
 from config_loader import load_config
-from run_charm_joint_ddp import build_model
+from run_charm_joint_v2vel_ddp import build_model
 from inferers.calibrate_binary_prior import predict as _calib_predict
 
 

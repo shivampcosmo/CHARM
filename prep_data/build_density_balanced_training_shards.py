@@ -27,6 +27,14 @@ Make only diagnostic plots:
     python prep_data/build_density_balanced_training_shards.py \\
         --config run_configs/TRAIN_CHARM_JOINT_v2vel.yaml \\
         --diagnostics_only
+
+Exclude the union of multiple previous shard sets:
+
+    python prep_data/build_density_balanced_training_shards.py \\
+        --config run_configs/TRAIN_CHARM_JOINT_v2vel.yaml \\
+        --exclude_source metadata \\
+        --exclude_shard_dirs ../data/shards_Mmin5e12 \\
+            ../data/shards_Mmin5e12_density_balanced_remaining_n64
 """
 
 from __future__ import annotations
@@ -161,6 +169,17 @@ def make_constant_edges(value: float, n_bins: int) -> np.ndarray:
     return np.linspace(float(value) - width, float(value) + width, n_bins + 1)
 
 
+def selection_seed_for_sim(cfg: dict, args: argparse.Namespace, isim: int) -> int:
+    """Deterministic per-sim selection seed for one subsampling realization."""
+    dc = cfg["data_settings"]
+    base_seed = (
+        int(args.selection_seed)
+        if args.selection_seed is not None
+        else int(dc.get("subvol_seed", 42))
+    )
+    return base_seed * 1000003 + int(isim) + 17
+
+
 def old_rng_exclusion_ids(cfg: dict, isim: int, total_subvols: int) -> Set[int]:
     """Reconstruct the old random selection used by build_training_shards.py."""
     sc = cfg["sim_settings"]
@@ -221,12 +240,42 @@ def load_metadata_exclusions(
     return out
 
 
+def load_metadata_exclusions_many(
+    exclude_shard_dirs: Sequence[str],
+    sim_ids_needed: Iterable[int],
+    require_all_dirs: bool,
+) -> Tuple[Dict[int, Set[int]], List[str]]:
+    """
+    Load and union previous subvolume IDs from one or more shard directories.
+
+    If require_all_dirs is true, any unreadable/missing shard directory raises.
+    Otherwise, readable dirs are used and unreadable dirs are returned.
+    """
+    merged: Dict[int, Set[int]] = {}
+    unavailable: List[str] = []
+    for shard_dir in exclude_shard_dirs:
+        try:
+            part = load_metadata_exclusions(shard_dir, sim_ids_needed)
+        except MetadataUnavailable:
+            if require_all_dirs:
+                raise
+            unavailable.append(shard_dir)
+            continue
+        for sim_id, subvol_ids in part.items():
+            merged.setdefault(int(sim_id), set()).update(int(x) for x in subvol_ids)
+
+    if not merged:
+        missing = ", ".join(unavailable) if unavailable else ", ".join(exclude_shard_dirs)
+        raise MetadataUnavailable(f"No usable metadata found in exclude shard dirs: {missing}")
+    return merged, unavailable
+
+
 def prepare_exclusions(
     cfg: dict,
     sim_ids: Sequence[int],
     candidate_mode: str,
     exclude_source: str,
-    exclude_shard_dir: str,
+    exclude_shard_dirs: Sequence[str],
     total_subvols: int,
 ) -> Tuple[Dict[int, Set[int]], Dict[int, str]]:
     """Return per-simulation excluded IDs and their source label."""
@@ -236,7 +285,11 @@ def prepare_exclusions(
     metadata_exclusions: Dict[int, Set[int]] = {}
     if exclude_source in ("auto", "metadata"):
         try:
-            metadata_exclusions = load_metadata_exclusions(exclude_shard_dir, sim_ids)
+            metadata_exclusions, _ = load_metadata_exclusions_many(
+                exclude_shard_dirs=exclude_shard_dirs,
+                sim_ids_needed=sim_ids,
+                require_all_dirs=(exclude_source == "metadata"),
+            )
         except MetadataUnavailable:
             if exclude_source == "metadata":
                 raise
@@ -251,7 +304,8 @@ def prepare_exclusions(
             sources[isim] = "metadata"
         elif exclude_source == "metadata":
             raise MetadataUnavailable(
-                f"No previous subvolume metadata found for sim {isim} in {exclude_shard_dir}"
+                f"No previous subvolume metadata found for sim {isim} in "
+                f"{', '.join(exclude_shard_dirs)}"
             )
         else:
             exclusions[isim] = old_rng_exclusion_ids(cfg, isim, total_subvols)
@@ -394,6 +448,131 @@ def select_density_balanced_subvolumes(
     )
 
 
+def select_random_subvolumes(
+    mean_density: np.ndarray,
+    excluded_ids: Set[int],
+    exclude_source: str,
+    n_select: int,
+    n_density_bins: int,
+    seed: int,
+    sim_id: int,
+) -> SelectionInfo:
+    """Select n_select subvolumes uniformly at random from the candidate set."""
+    total_subvols = int(mean_density.shape[0])
+    if n_select <= 0:
+        raise ValueError(f"n_select must be positive, got {n_select}")
+    if n_density_bins <= 0:
+        raise ValueError(f"n_density_bins must be positive, got {n_density_bins}")
+
+    all_ids = np.arange(total_subvols, dtype=np.int32)
+    excluded = np.array(sorted(excluded_ids), dtype=np.int32)
+    keep_mask = np.ones(total_subvols, dtype=bool)
+    if excluded.size:
+        keep_mask[excluded] = False
+    candidate_ids = all_ids[keep_mask]
+    candidate_means = mean_density[candidate_ids]
+
+    if candidate_ids.size < n_select:
+        raise ValueError(
+            f"Sim {sim_id}: requested {n_select} subvolumes but only "
+            f"{candidate_ids.size} candidates remain after excluding {len(excluded_ids)}"
+        )
+    if not np.all(np.isfinite(candidate_means)):
+        raise ValueError(f"Sim {sim_id}: candidate mean densities contain non-finite values")
+
+    rng = np.random.default_rng(seed=seed)
+    selected_ids = rng.choice(candidate_ids, n_select, replace=False).astype(np.int32)
+    rng.shuffle(selected_ids)
+
+    lo = float(candidate_means.min())
+    hi = float(candidate_means.max())
+    constant_density = bool(np.isclose(lo, hi, rtol=0.0, atol=1.0e-12))
+    if constant_density:
+        edges = make_constant_edges(lo, n_density_bins)
+        all_bins = np.zeros(total_subvols, dtype=np.int16)
+        candidate_bins = np.zeros(candidate_ids.size, dtype=np.int16)
+        selected_bins = np.zeros(n_select, dtype=np.int16)
+        active_bin_count = 1
+    else:
+        edges = np.linspace(lo, hi, n_density_bins + 1)
+        all_bins = assign_bins(mean_density, edges)
+        candidate_bins = assign_bins(candidate_means, edges)
+        selected_bins = assign_bins(mean_density[selected_ids], edges)
+        active_bin_count = int(np.count_nonzero(np.bincount(candidate_bins, minlength=n_density_bins)))
+
+    if selected_ids.size != n_select:
+        raise RuntimeError(
+            f"Sim {sim_id}: selection produced {selected_ids.size}, expected {n_select}"
+        )
+    if np.unique(selected_ids).size != selected_ids.size:
+        raise RuntimeError(f"Sim {sim_id}: selection contains duplicate subvolume IDs")
+    if selected_ids.min() < 0 or selected_ids.max() >= total_subvols:
+        raise RuntimeError(f"Sim {sim_id}: selection contains out-of-range IDs")
+    overlap = set(int(x) for x in selected_ids).intersection(excluded_ids)
+    if overlap:
+        raise RuntimeError(
+            f"Sim {sim_id}: selection overlaps excluded IDs, e.g. {sorted(overlap)[:5]}"
+        )
+
+    all_hist = np.bincount(all_bins, minlength=n_density_bins).astype(np.int32)
+    candidate_hist = np.bincount(candidate_bins, minlength=n_density_bins).astype(np.int32)
+    selected_hist = np.bincount(selected_bins, minlength=n_density_bins).astype(np.int32)
+
+    selected_means = mean_density[selected_ids].astype(np.float64)
+    return SelectionInfo(
+        sim_id=int(sim_id),
+        selected_ids=selected_ids,
+        selected_means=selected_means,
+        selected_bins=selected_bins.astype(np.int16),
+        bin_edges=edges.astype(np.float64),
+        all_hist=all_hist,
+        candidate_hist=candidate_hist,
+        selected_hist=selected_hist,
+        excluded_count=int(len(excluded_ids)),
+        candidate_count=int(candidate_ids.size),
+        active_bin_count=active_bin_count,
+        constant_density=constant_density,
+        exclude_source=str(exclude_source),
+        density_min_all=float(mean_density.min()),
+        density_max_all=float(mean_density.max()),
+        density_min_candidate=lo,
+        density_max_candidate=hi,
+    )
+
+
+def select_subvolumes(
+    selection_mode: str,
+    mean_density: np.ndarray,
+    excluded_ids: Set[int],
+    exclude_source: str,
+    n_select: int,
+    n_density_bins: int,
+    seed: int,
+    sim_id: int,
+) -> SelectionInfo:
+    if selection_mode == "density":
+        return select_density_balanced_subvolumes(
+            mean_density=mean_density,
+            excluded_ids=excluded_ids,
+            exclude_source=exclude_source,
+            n_select=n_select,
+            n_density_bins=n_density_bins,
+            seed=seed,
+            sim_id=sim_id,
+        )
+    if selection_mode == "random":
+        return select_random_subvolumes(
+            mean_density=mean_density,
+            excluded_ids=excluded_ids,
+            exclude_source=exclude_source,
+            n_select=n_select,
+            n_density_bins=n_density_bins,
+            seed=seed,
+            sim_id=sim_id,
+        )
+    raise ValueError(f"Unsupported selection_mode={selection_mode!r}")
+
+
 def process_sim_to_batch_selected(
     isim: int,
     cfg: dict,
@@ -486,8 +665,11 @@ def create_audit_datasets(
     mg.create_dataset("density_bin", shape=(n_total,), dtype="int16", chunks=(1,))
 
     sg = f.create_group("selection")
+    sg.attrs["selection_mode"] = args.selection_mode
     sg.attrs["candidate_mode"] = args.candidate_mode
     sg.attrs["exclude_source_requested"] = args.exclude_source
+    sg.attrs["exclude_shard_dirs"] = json.dumps(args.exclude_shard_dirs)
+    sg.attrs["selection_seed"] = -1 if args.selection_seed is None else int(args.selection_seed)
     sg.attrs["n_select"] = int(n_select)
     sg.attrs["n_density_bins"] = int(n_density_bins)
     sg.attrs["exclude_source_codes"] = json.dumps(CODE_EXCLUDE_SOURCE, sort_keys=True)
@@ -613,8 +795,9 @@ def plot_diagnostics_for_sim(
     grid = nb * nax
     rho = load_density_full(dc["fastpm_dir"], isim, grid, str(dc["z_snap"]))
     mean_density = compute_subvol_mean_density(rho, nb, nax)
-    seed = int(dc.get("subvol_seed", 42)) * 1000003 + int(isim) + 17
-    info = select_density_balanced_subvolumes(
+    seed = selection_seed_for_sim(cfg, args, isim)
+    info = select_subvolumes(
+        selection_mode=args.selection_mode,
         mean_density=mean_density,
         excluded_ids=excluded_ids,
         exclude_source=exclude_source,
@@ -684,13 +867,15 @@ def plot_diagnostics_for_sim(
     ax.legend(frameon=False, fontsize=8)
 
     fig.suptitle(
-        f"candidate_mode={args.candidate_mode}, exclude_source={exclude_source}, "
+        f"selection_mode={args.selection_mode}, candidate_mode={args.candidate_mode}, "
+        f"exclude_source={exclude_source}, "
         f"excluded={len(excluded_ids)}, selected={selected.size}",
         fontsize=11,
     )
+    prefix = "random" if args.selection_mode == "random" else "density_balanced"
     out_path = os.path.join(
         out_dir,
-        f"density_balanced_diagnostics_sim_{isim}_{args.candidate_mode}.png",
+        f"{prefix}_diagnostics_sim_{isim}_{args.candidate_mode}.png",
     )
     fig.savefig(out_path, dpi=160)
     plt.close(fig)
@@ -708,7 +893,12 @@ def plot_diagnostics_for_sim(
     return summary
 
 
-def default_diagnostic_sim_ids(cfg: dict, split: str) -> List[int]:
+def default_diagnostic_sim_ids(
+    cfg: dict,
+    split: str,
+    n_diagnostic_sims: int,
+    diagnostic_seed: int,
+) -> List[int]:
     sc = cfg["sim_settings"]
     nsims_train = int(sc.get("nsims_train", 1800))
     nsims_val = int(sc.get("nsims_val", 100))
@@ -720,7 +910,9 @@ def default_diagnostic_sim_ids(cfg: dict, split: str) -> List[int]:
         count = nsims_train
     if count <= 0:
         raise ValueError(f"No simulations available for split={split}")
-    ids = [start, start + (count - 1) // 2, start + count - 1]
+    n_pick = min(max(int(n_diagnostic_sims), 1), count)
+    rng = np.random.default_rng(seed=int(diagnostic_seed))
+    ids = start + rng.choice(count, size=n_pick, replace=False)
     return sorted(set(int(x) for x in ids))
 
 
@@ -728,7 +920,12 @@ def make_diagnostics(cfg: dict, args: argparse.Namespace, split: str) -> dict:
     sim_ids = (
         [int(x) for x in args.diagnostic_sim_ids]
         if args.diagnostic_sim_ids
-        else default_diagnostic_sim_ids(cfg, split)
+        else default_diagnostic_sim_ids(
+            cfg,
+            split,
+            n_diagnostic_sims=int(args.n_diagnostic_sims),
+            diagnostic_seed=int(args.diagnostic_seed),
+        )
     )
     total_subvols = int(cfg["sim_settings"]["nb"]) ** 3
     exclusions, sources = prepare_exclusions(
@@ -736,7 +933,7 @@ def make_diagnostics(cfg: dict, args: argparse.Namespace, split: str) -> dict:
         sim_ids=sim_ids,
         candidate_mode=args.candidate_mode,
         exclude_source=args.exclude_source,
-        exclude_shard_dir=args.exclude_shard_dir,
+        exclude_shard_dirs=args.exclude_shard_dirs,
         total_subvols=total_subvols,
     )
     out_dir = args.diagnostic_out_dir
@@ -757,12 +954,18 @@ def make_diagnostics(cfg: dict, args: argparse.Namespace, split: str) -> dict:
         "created_at_unix": time.time(),
         "config": args.config,
         "split": split,
+        "selection_mode": args.selection_mode,
         "candidate_mode": args.candidate_mode,
         "exclude_source_requested": args.exclude_source,
+        "exclude_shard_dirs": args.exclude_shard_dirs,
+        "selection_seed": args.selection_seed,
         "diagnostic_sim_ids": sim_ids,
+        "n_diagnostic_sims": int(args.n_diagnostic_sims),
+        "diagnostic_seed": int(args.diagnostic_seed),
         "records": records,
     }
-    summary_path = os.path.join(out_dir, f"density_balanced_diagnostics_{split}.json")
+    prefix = "random" if args.selection_mode == "random" else "density_balanced"
+    summary_path = os.path.join(out_dir, f"{prefix}_diagnostics_{split}.json")
     write_json_atomic(summary_path, payload)
     print(f"[diagnostics] wrote {len(records)} plot(s) and {summary_path}", flush=True)
     return payload
@@ -833,7 +1036,7 @@ def build_density_balanced_shard(
         sim_ids=sim_ids_all,
         candidate_mode=args.candidate_mode,
         exclude_source=args.exclude_source,
-        exclude_shard_dir=args.exclude_shard_dir,
+        exclude_shard_dirs=args.exclude_shard_dirs,
         total_subvols=total_subvols,
     )
 
@@ -843,8 +1046,11 @@ def build_density_balanced_shard(
         "config": args.config,
         "shard_id": str(shard_id),
         "out_path": out_path,
+        "selection_mode": args.selection_mode,
         "candidate_mode": args.candidate_mode,
         "exclude_source_requested": args.exclude_source,
+        "exclude_shard_dirs": args.exclude_shard_dirs,
+        "selection_seed": args.selection_seed,
         "n_select": n_select,
         "n_density_bins": n_density_bins,
         "n_total_subvols": n_total,
@@ -862,8 +1068,9 @@ def build_density_balanced_shard(
         for isim in tqdm(sim_ids_all, desc=f"dry-run shard {shard_id}", leave=True):
             rho = load_density_full(dc["fastpm_dir"], int(isim), nb * nax, str(dc["z_snap"]))
             mean_density = compute_subvol_mean_density(rho, nb, nax)
-            seed = int(dc.get("subvol_seed", 42)) * 1000003 + int(isim) + 17
-            info = select_density_balanced_subvolumes(
+            seed = selection_seed_for_sim(cfg, args, int(isim))
+            info = select_subvolumes(
+                selection_mode=args.selection_mode,
                 mean_density=mean_density,
                 excluded_ids=exclusions[int(isim)],
                 exclude_source=sources[int(isim)],
@@ -892,8 +1099,9 @@ def build_density_balanced_shard(
                 isim = int(isim)
                 rho = load_density_full(dc["fastpm_dir"], isim, nb * nax, str(dc["z_snap"]))
                 mean_density = compute_subvol_mean_density(rho, nb, nax)
-                seed = int(dc.get("subvol_seed", 42)) * 1000003 + isim + 17
-                info = select_density_balanced_subvolumes(
+                seed = selection_seed_for_sim(cfg, args, isim)
+                info = select_subvolumes(
+                    selection_mode=args.selection_mode,
                     mean_density=mean_density,
                     excluded_ids=exclusions[isim],
                     exclude_source=sources[isim],
@@ -952,8 +1160,12 @@ def parse_args() -> argparse.Namespace:
                    help="Training shard rank. Defaults to SLURM_ARRAY_TASK_ID or 0.")
     p.add_argument("--candidate_mode", default="remaining", choices=["remaining", "all"],
                    help="Select from remaining subvolumes or all 512 subvolumes.")
+    p.add_argument("--selection_mode", default="density", choices=["density", "random"],
+                   help="density = uniform over density bins; random = direct random draw.")
     p.add_argument("--exclude_shard_dir", default=None,
                    help="Shard dir containing previous metadata; defaults to config shard_dir.")
+    p.add_argument("--exclude_shard_dirs", nargs="*", default=None,
+                   help="One or more shard dirs whose metadata/subvol_ids are union-excluded.")
     p.add_argument("--exclude_source", default="auto", choices=["auto", "metadata", "rng"],
                    help="How to identify previously selected subvolumes in remaining mode.")
     p.add_argument("--out_dir", default=None,
@@ -962,6 +1174,8 @@ def parse_args() -> argparse.Namespace:
                    help="Number of subvolumes to select per simulation.")
     p.add_argument("--n_density_bins", type=int, default=16,
                    help="Number of fixed-width density bins per simulation.")
+    p.add_argument("--selection_seed", type=int, default=None,
+                   help="Base random seed for the density-balanced subvolume realization.")
     p.add_argument("--overwrite", action="store_true",
                    help="Replace an existing output shard if present.")
     p.add_argument("--dry_run", action="store_true",
@@ -972,6 +1186,10 @@ def parse_args() -> argparse.Namespace:
                    help="Save diagnostic plots after dry-run/build.")
     p.add_argument("--diagnostic_sim_ids", type=int, nargs="*", default=None,
                    help="Specific simulation IDs for diagnostic plots.")
+    p.add_argument("--n_diagnostic_sims", type=int, default=3,
+                   help="Number of random diagnostic cosmologies when IDs are not provided.")
+    p.add_argument("--diagnostic_seed", type=int, default=12345,
+                   help="Seed for choosing random diagnostic cosmologies.")
     p.add_argument("--diagnostic_out_dir", default=DEFAULT_DIAGNOSTIC_OUT_DIR,
                    help="Directory for diagnostic plots and summaries.")
     return p.parse_args()
@@ -982,14 +1200,19 @@ def main() -> None:
     args.config = resolve_config_path(args.config)
     cfg = normalize_config_paths(load_config(args.config))
 
-    if args.exclude_shard_dir is None:
-        args.exclude_shard_dir = cfg["data_settings"]["shard_dir"]
-    args.exclude_shard_dir = repo_path(args.exclude_shard_dir)
+    if args.exclude_shard_dirs:
+        args.exclude_shard_dirs = [repo_path(x) for x in args.exclude_shard_dirs]
+    else:
+        if args.exclude_shard_dir is None:
+            args.exclude_shard_dir = cfg["data_settings"]["shard_dir"]
+        args.exclude_shard_dirs = [repo_path(args.exclude_shard_dir)]
+    args.exclude_shard_dir = args.exclude_shard_dirs[0]
     args.diagnostic_out_dir = repo_path(args.diagnostic_out_dir)
 
     if args.out_dir is None:
         base = cfg["data_settings"]["shard_dir"].rstrip(os.sep)
-        args.out_dir = f"{base}_density_balanced_{args.candidate_mode}"
+        tag = "random" if args.selection_mode == "random" else "density_balanced"
+        args.out_dir = f"{base}_{tag}_{args.candidate_mode}"
     args.out_dir = repo_path(args.out_dir)
 
     if args.shard_rank is None:

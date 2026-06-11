@@ -1,0 +1,52 @@
+# TRAIN_CHARM_JOINT_v2vel_M1_finteune0.yaml
+# ------------------------------------------------
+# Stage 0: warm-start from the last known finite finetune5 checkpoint, replace
+# the M1 flow with a fresh 16-knot network, and train only the M1 branch while
+# freezing the encoder and all other heads.
+# Stage 1: unfreeze everything and jointly fine-tune all heads.
+
+extends: TRAIN_CHARM_JOINT_v2vel_finetune4.yaml
+
+network_settings:
+  K_M1: 12
+
+train_settings:
+  # Lower per-rank micro-batch size for the all-head phase.  The trainer
+  # accumulates over more outer batches, so this cuts activation memory while
+  # preserving the effective shard pass when resuming.
+  nsims_per_batch: 128
+
+  init_from_checkpoint: ../model_checkpoints/CHARM_JOINT_v2vel_finetune5/charm_joint_step000310_ph0.pth
+  init_exclude_prefixes: [m1_model.]
+
+  finetune_from_checkpoint: null
+  finetune_keep_best_val_threshold: false
+
+  checkpoint_dir: ../model_checkpoints/CHARM_JOINT_v2vel_M1_v1_finteune0/
+  resume_checkpoint: null
+
+  phases:
+    - heads:          [m1]
+      trainable_heads: [m1]
+      train_encoder:  false
+      train_kendall:  false
+      nepochs:        800
+      learning_rate:  1.0e-4
+      warmup_frac:    0.05
+      optimizer_phase_idx: 0
+
+    - heads:          [binary, multi, m1, mdiff, pos, vel, conc]
+      trainable_heads: [binary, multi, m1, mdiff, pos, vel, conc]
+      train_encoder:  true
+      train_kendall:  true
+      nepochs:        3000
+      learning_rate:  3.0e-5
+      warmup_frac:    0.05
+      optimizer_phase_idx: 1
+
+wandb:
+  run_name: full_v2vel_M1_v1_finteune0
+  watch_log_freq: 0
+
+data_settings:
+  shard_dir: /mnt/ceph/users/spandey/CHARM_v2/data/shards_Mmin5e12_density_balanced_remaining_n64

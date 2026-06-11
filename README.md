@@ -50,11 +50,11 @@ quantities, matching inference-time inputs more closely.
 | `charm/run_charm_joint_ddp.py` | Standard DDP joint trainer. |
 | `charm/run_charm_joint_v2vel_ddp.py` | v2vel trainer; warm-starts from v2 while reinitialising `vel_model.*`. |
 | `charm/run_charm_joint_exposure_ddp.py` | Exposure-robust DDP trainer with rollout validation. |
-| `charm/run_inference_v2.py` | Full catalog inference for one simulation. |
-| `charm/run_test_inference_v2.py` | Batch inference over held-out test simulations. |
-| `charm/calibrate_binary_prior.py` | Binary prior calibrator for subsampled/weighted binary heads. |
-| `charm/plot_inference_v2.py` | Single-simulation mock/true diagnostics. |
-| `charm/plot_inference_ratios_v2.py` | Aggregate mock/true ratio diagnostics. |
+| `charm/inferers/run_inference_v2.py` | Full catalog inference for one simulation. |
+| `charm/inferers/run_test_inference_v2.py` | Batch inference over held-out test simulations. |
+| `charm/inferers/calibrate_binary_prior.py` | Binary prior calibrator for subsampled/weighted binary heads. |
+| `charm/plotters/plot_inference_v2.py` | Single-simulation mock/true diagnostics. |
+| `charm/plotters/plot_inference_ratios_v2.py` | Aggregate mock/true ratio diagnostics. |
 | `prep_data/process_halos_quijote_v2.py` | Rockstar halos to per-simulation HDF5. |
 | `prep_data/build_training_shards.py` | Per-simulation HDF5 to per-GPU training shards. |
 | `CURRENT_LIVE_CODE_SUMMARY.md` | Detailed developer-facing map of the live code. |
@@ -142,7 +142,7 @@ The binary head is the main control point for total halo counts.
 For `subsample` or `alpha`, fit the calibrator after training:
 
 ```bash
-python charm/calibrate_binary_prior.py \
+python charm/inferers/calibrate_binary_prior.py \
   --config run_configs/TRAIN_CHARM_JOINT_v3.yaml
 ```
 
@@ -176,7 +176,7 @@ Expected outputs for the 5e12 mass cut:
 Single simulation:
 
 ```bash
-python charm/run_inference_v2.py \
+python charm/inferers/run_inference_v2.py \
   --config run_configs/TRAIN_CHARM_JOINT_v4.yaml \
   --checkpoint ../model_checkpoints/CHARM_JOINT_v4/checkpoint_best_rollout.pth \
   --sim_id 1900
@@ -185,7 +185,7 @@ python charm/run_inference_v2.py \
 For a subsampled/alpha binary head:
 
 ```bash
-python charm/run_inference_v2.py \
+python charm/inferers/run_inference_v2.py \
   --config run_configs/TRAIN_CHARM_JOINT_v3.yaml \
   --checkpoint ../model_checkpoints/CHARM_JOINT_v3/checkpoint_best_rollout.pth \
   --binary_prior_calibrator ../model_checkpoints/CHARM_JOINT_v3/binary_prior_calibrator.npz \
@@ -195,7 +195,7 @@ python charm/run_inference_v2.py \
 Batch inference over held-out test simulations:
 
 ```bash
-python charm/run_test_inference_v2.py \
+python charm/inferers/run_test_inference_v2.py \
   --config run_configs/TRAIN_CHARM_JOINT_v4.yaml \
   --checkpoint ../model_checkpoints/CHARM_JOINT_v4/checkpoint_best_rollout.pth
 ```
@@ -203,7 +203,7 @@ python charm/run_test_inference_v2.py \
 Aggregate diagnostics:
 
 ```bash
-python charm/plot_inference_ratios_v2.py \
+python charm/plotters/plot_inference_ratios_v2.py \
   --config run_configs/TRAIN_CHARM_JOINT_v4.yaml
 ```
 

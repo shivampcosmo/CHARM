@@ -1,0 +1,36 @@
+# TRAIN_CHARM_JOINT_v2vel_finetune.yaml
+# ------------------------------------------------
+# Fine-tune v2vel from the current best validation checkpoint with a fresh
+# optimizer and LR schedule.  This intentionally writes to a new checkpoint
+# directory so the original CHARM_JOINT_v2vel best-fit is never overwritten.
+
+extends: TRAIN_CHARM_JOINT_v2vel_finetune3.yaml
+
+train_settings:
+  # Disable the original one-time partial v2 -> v2vel warm start inherited from
+  # TRAIN_CHARM_JOINT_v2vel.yaml.  This run loads the full v2vel best checkpoint.
+  init_from_checkpoint: null
+  init_exclude_prefixes: []
+
+  # Full-state seed checkpoint.  The trainer loads model_state and Kendall
+  # state from here, then resets global_step/phase/step/optimizer schedule.
+  finetune_from_checkpoint: ../model_checkpoints/CHARM_JOINT_v2vel_finetune3/charm_joint_best_val.pth
+  finetune_keep_best_val_threshold: true
+
+  # New output directory.  Auto-resume from this directory still works if the
+  # fine-tune job is preempted after writing charm_joint_resume.pth.
+  checkpoint_dir: ../model_checkpoints/CHARM_JOINT_v2vel_finetune4/
+  resume_checkpoint: null
+
+  phases:
+    - heads:          [binary, multi, m1, mdiff, pos, vel, conc]
+      nepochs:        1800
+      learning_rate:  5.0e-5
+      warmup_frac:    0.05
+      # Treat this as a late-phase optimizer for the encoder LR multiplier
+      # while still starting a fresh phase schedule at step 0.
+      optimizer_phase_idx: 1
+
+wandb:
+  run_name: full_v2vel_finetune4
+  watch_log_freq: 0

@@ -197,7 +197,8 @@ def load_cosmology(lh_cosmo_file: str, isim: int) -> np.ndarray:
 
 # ── build CNN input tensors ───────────────────────────────────────────────────
 
-def build_cond_tensors(rho, vel, cosmo_vals, nb, nax, n_pad):
+def build_cond_tensors(rho, vel, cosmo_vals, nb, nax, n_pad,
+                       rho_pad=None, vel_pad=None):
     """
     Build the three conditioning tensors for CHARM_Model.sample():
 
@@ -213,14 +214,21 @@ def build_cond_tensors(rho, vel, cosmo_vals, nb, nax, n_pad):
     nb         : int — sub-cubes per side (8)
     nax        : int — voxels per sub-cube side (16)
     n_pad      : int — padding voxels per side (4)
+    rho_pad    : (grid+2*n_pad, ...) float32  pre-padded density (optional).
+                 If provided, the internal wrap-padding step is skipped so that
+                 callers tiling a larger volume can supply correct cross-chunk
+                 context rather than letting each chunk wrap its own boundaries.
+    vel_pad    : (3, grid+2*n_pad, ...) float32  pre-padded velocity (optional).
     """
     nsubs = nb ** 3          # 512
     nvox  = nax ** 3         # 4096
     D_pad = nax + 2 * n_pad  # 24
 
     # ── padded sub-cubes for CNN ──────────────────────────────────────────────
-    rho_pad = np.pad(rho, n_pad, 'wrap')                             # (136,136,136)
-    vel_pad = np.pad(vel, [(0,0)] + [(n_pad,n_pad)]*3, 'wrap')      # (3,136,136,136)
+    if rho_pad is None:
+        rho_pad = np.pad(rho, n_pad, 'wrap')                         # (136,136,136)
+    if vel_pad is None:
+        vel_pad = np.pad(vel, [(0,0)] + [(n_pad,n_pad)]*3, 'wrap')  # (3,136,136,136)
 
     rho_sub = subvols_padded(rho_pad, nb, nax, n_pad).copy()        # (512, D_pad, D_pad, D_pad)
     vel_sub = subvols_padded(vel_pad, nb, nax, n_pad).copy()        # (512, 3, D_pad, D_pad, D_pad)
